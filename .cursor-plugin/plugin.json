@@ -1,0 +1,13 @@
+{
+  "name": "mentions",
+  "displayName": "Mentions",
+  "version": "1.0.0",
+  "description": "Forward configured GitHub @mentions to a webhook and handle them with an acknowledgement, milestone progress, and a verified reply.",
+  "author": {
+    "name": "ArchAgents",
+    "email": "304431358+ArchAgents@users.noreply.github.com"
+  },
+  "license": "MIT",
+  "keywords": ["github", "mentions", "webhook", "automation"],
+  "category": "Developer Tools"
+}

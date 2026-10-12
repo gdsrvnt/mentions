@@ -1,0 +1,65 @@
+name: mention-forward
+
+# Forwards selected GitHub events to a webhook when the trigger user mentions the bot.
+#
+# Surfaces covered: issues, issue_comment, pull_request, pull_request_review,
+# pull_request_review_comment, discussion, discussion_comment.
+#
+# Pull request opened and edited events are subscribed as pull_request_target so
+# the workflow file and repository secrets come from the default branch. This job
+# never checks out repository code and never runs pull request contents.
+#
+# commit_comment cannot be supported reliably: GitHub Actions has no
+# commit_comment trigger, and the events above do not include commit comments.
+# The mention match is case-sensitive.
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+  pull_request_target:
+    types: [opened, edited]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  discussion:
+    types: [created, edited]
+  discussion_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  forward:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: >-
+      github.actor == '__MENTIONS_TRIGGER_USER__' && (
+        (github.event_name == 'issues' && (contains(github.event.issue.body || '', '@__MENTIONS_BOT_HANDLE__') || contains(github.event.issue.title || '', '@__MENTIONS_BOT_HANDLE__'))) ||
+        (github.event_name == 'pull_request_target' && (contains(github.event.pull_request.body || '', '@__MENTIONS_BOT_HANDLE__') || contains(github.event.pull_request.title || '', '@__MENTIONS_BOT_HANDLE__'))) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body || '', '@__MENTIONS_BOT_HANDLE__')) ||
+        (github.event_name == 'discussion' && (contains(github.event.discussion.body || '', '@__MENTIONS_BOT_HANDLE__') || contains(github.event.discussion.title || '', '@__MENTIONS_BOT_HANDLE__'))) ||
+        ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment' || github.event_name == 'discussion_comment') && contains(github.event.comment.body || '', '@__MENTIONS_BOT_HANDLE__'))
+      )
+    steps:
+      - name: Forward event to webhook
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WEBHOOK_URL: ${{ secrets.__MENTIONS_SECRET_URL__ }}
+          WEBHOOK_KEY: ${{ secrets.__MENTIONS_SECRET_KEY__ }}
+          WEBHOOK_HEADER: ${{ secrets.__MENTIONS_SECRET_HEADER__ }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${WEBHOOK_URL}" || -z "${WEBHOOK_KEY}" || -z "${WEBHOOK_HEADER}" ]]; then
+            echo "::error::__MENTIONS_SECRET_URL__, __MENTIONS_SECRET_KEY__, and __MENTIONS_SECRET_HEADER__ must all be set"
+            exit 1
+          fi
+          jq -n --arg event_name "$EVENT_NAME" --slurpfile payload "$GITHUB_EVENT_PATH" \
+            '{event_name: $event_name, payload: $payload[0]}' > "${RUNNER_TEMP}/body.json"
+          curl --fail-with-body -sS -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "${WEBHOOK_HEADER}: ${WEBHOOK_KEY}" \
+            --data-binary "@${RUNNER_TEMP}/body.json"
