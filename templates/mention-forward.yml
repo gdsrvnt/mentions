@@ -53,13 +53,23 @@ jobs:
           WEBHOOK_HEADER: ${{ secrets.__MENTIONS_SECRET_HEADER__ }}
         run: |
           set -euo pipefail
-          if [[ -z "${WEBHOOK_URL}" || -z "${WEBHOOK_KEY}" || -z "${WEBHOOK_HEADER}" ]]; then
-            echo "::error::__MENTIONS_SECRET_URL__, __MENTIONS_SECRET_KEY__, and __MENTIONS_SECRET_HEADER__ must all be set"
+          if [ -z "${WEBHOOK_URL:-}" ] || [ -z "${WEBHOOK_HEADER:-}" ]; then
+            echo "::error::__MENTIONS_SECRET_URL__ and __MENTIONS_SECRET_HEADER__ must be set"
             exit 1
           fi
+          # __MENTIONS_SECRET_HEADER__ may be the full header line ("Authorization: Bearer <key>"), as the routine panel shows it.
+          case "$WEBHOOK_HEADER" in
+            *:*) auth_header="$WEBHOOK_HEADER" ;;
+            *)
+              if [ -z "${WEBHOOK_KEY:-}" ]; then
+                echo "::error::__MENTIONS_SECRET_KEY__ must be set when __MENTIONS_SECRET_HEADER__ is only a header name"
+                exit 1
+              fi
+              auth_header="${WEBHOOK_HEADER}: ${WEBHOOK_KEY}" ;;
+          esac
           jq -n --arg event_name "$EVENT_NAME" --slurpfile payload "$GITHUB_EVENT_PATH" \
             '{event_name: $event_name, payload: $payload[0]}' > "${RUNNER_TEMP}/body.json"
           curl --fail-with-body -sS -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
-            -H "${WEBHOOK_HEADER}: ${WEBHOOK_KEY}" \
+            -H "$auth_header" \
             --data-binary "@${RUNNER_TEMP}/body.json"

@@ -33,3 +33,11 @@ If the script fails, it deletes any remote branch it pushed and its temporary cl
 ## After the pull request is merged
 
 The user creates the printed Actions secrets and the webhook routine, then merges. Issue, comment, and discussion workflows run from the default branch. Handle accepted events with the `handle-mention` skill, using the same trigger user, bot handle, and repository.
+
+## Gotcha: webhook header
+
+- The Grok Bot routine panel's "Authorization header" field is the full line, `Authorization: Bearer <key>`, not just a header name.
+- The forwarder accepts it pasted verbatim. If the `*_WEBHOOK_HEADER` secret contains `:`, it is sent as the header line and `*_WEBHOOK_KEY` is optional. Otherwise the forwarder sends `<header>: <key>`.
+- Symptom of a mismatch: the forward step fails with HTTP 401 `Invalid API key`.
+- Debug from the Actions logs with `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs`. `gh run view --log-failed` can come back empty.
+- For setup, prefer secret cards: the bot sets repo secrets from env with `printf %s "$VAR" | gh secret set <NAME> -R <owner>/<repo>`, never by hand and never by echoing values.
