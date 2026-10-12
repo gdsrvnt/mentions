@@ -26,7 +26,7 @@ bash scripts/install.sh "<owner/repo>" --user "<login>" --bot "<handle>"
 
 Add `--secret-prefix`, `--branch`, or `--dry-run` only when the user supplied them. Use `--dry-run` when they asked to preview.
 
-The script renders `templates/mention-forward.yml`, commits it on a new branch, pushes, opens a pull request, and prints the secrets and webhook routine. Do not create the secrets, merge the pull request, or push a branch yourself. Return the pull request URL and the script's secrets and webhook section to the user.
+The script renders `templates/mention-forward.yml`, commits it on a new branch, pushes, opens a pull request, and prints the secrets and webhook routine. Do not merge the pull request or push a branch yourself. For the secrets, send the user the routine's field links plus one secret card per value, then set each repo secret from env (see the webhook header gotcha below); never ask the user to add them by hand. Return the pull request URL.
 
 If the script fails, it deletes any remote branch it pushed and its temporary clone. Do not recreate that branch by hand. Fix the reported cause and run `scripts/install.sh` again.
 
