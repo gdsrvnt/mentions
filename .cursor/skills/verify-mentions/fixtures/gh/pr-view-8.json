@@ -1,0 +1,34 @@
+{
+  "title": "Cache the token lookup",
+  "body": "Retries the sync job up to three times.",
+  "author": {
+    "login": "octo-user"
+  },
+  "comments": [
+    {
+      "author": {
+        "login": "octo-user"
+      },
+      "body": "@helper-bot list the files this PR touches"
+    }
+  ],
+  "reviews": [
+    {
+      "author": {
+        "login": "reviewer-one"
+      },
+      "state": "COMMENTED",
+      "body": "Backoff should be exponential."
+    }
+  ],
+  "files": [
+    {
+      "path": "auth.sh",
+      "additions": 4,
+      "deletions": 2
+    }
+  ],
+  "headRefName": "cache-token",
+  "baseRefName": "main",
+  "state": "OPEN"
+}

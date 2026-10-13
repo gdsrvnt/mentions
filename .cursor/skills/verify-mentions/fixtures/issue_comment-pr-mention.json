@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 7,
+    "title": "Add retry to the sync job",
+    "user": { "login": "octo-user" },
+    "pull_request": { "url": "https://api.github.com/repos/octo-org/sandbox/pulls/7" }
+  },
+  "comment": {
+    "id": 1001,
+    "body": "@helper-bot summarize the open review threads on this PR",
+    "user": { "login": "octo-user" }
+  },
+  "repository": { "full_name": "octo-org/sandbox", "name": "sandbox", "owner": { "login": "octo-org" } },
+  "sender": { "login": "octo-user" }
+}

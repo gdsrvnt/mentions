@@ -1,0 +1,30 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 8,
+    "title": "Cache the token lookup",
+    "user": {
+      "login": "octo-user"
+    },
+    "pull_request": {
+      "url": "https://api.github.com/repos/octo-org/sandbox/pulls/8"
+    }
+  },
+  "comment": {
+    "id": 1002,
+    "body": "@helper-bot list the files this PR touches",
+    "user": {
+      "login": "octo-user"
+    }
+  },
+  "repository": {
+    "full_name": "octo-org/sandbox",
+    "name": "sandbox",
+    "owner": {
+      "login": "octo-org"
+    }
+  },
+  "sender": {
+    "login": "octo-user"
+  }
+}
