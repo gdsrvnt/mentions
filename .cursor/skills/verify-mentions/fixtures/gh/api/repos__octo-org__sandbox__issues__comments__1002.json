@@ -1,0 +1,7 @@
+{
+  "id": 1002,
+  "body": "@helper-bot list the files this PR touches",
+  "user": {
+    "login": "octo-user"
+  }
+}

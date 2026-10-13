@@ -1,1 +1,4 @@
-.cursor/
+.cursor/*
+!.cursor/skills/
+.cursor/skills/*
+!.cursor/skills/verify-mentions/
