@@ -16,6 +16,17 @@ tmp="$(mktemp -d)"
 export TMPDIR="$tmp"
 trap 'rm -rf "$tmp"' EXIT
 
+# A fresh clone does not inherit the runner's local identity. actions/checkout
+# sets user.name only on the workspace repo, so the installer would die before
+# it can push and roll back.
+gitconfig="${tmp}/gitconfig"
+cat > "$gitconfig" << 'EOF'
+[user]
+	name = Test User
+	email = test@example.invalid
+EOF
+export GIT_CONFIG_GLOBAL="$gitconfig"
+
 if ! command -v actionlint >/dev/null 2>&1; then
   fail "actionlint is required"
 fi
