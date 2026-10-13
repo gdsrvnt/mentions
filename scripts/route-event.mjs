@@ -92,17 +92,44 @@ function graphql(fullName, number, what, nodeId) {
   };
 }
 
-function revisionOf(node) {
-  if (!node || typeof node !== "object" || typeof node.node_id !== "string" || node.node_id.length === 0) {
+function nodeIdOf(node) {
+  if (!node || typeof node !== "object") {
     return null;
   }
-  if (typeof node.updated_at === "string" && node.updated_at.length > 0) {
-    return { node_id: node.node_id, updated_at: node.updated_at };
+  if (typeof node.node_id === "string" && node.node_id.length > 0) {
+    return node.node_id;
+  }
+  if (typeof node.id === "string" && node.id.length > 0) {
+    return node.id;
+  }
+  return null;
+}
+
+function canonicalEvent(eventName) {
+  if (eventName === "pull_request" || eventName === "pull_request_target") {
+    return "pull_request";
+  }
+  return eventName;
+}
+
+function revisionOf(node) {
+  const nodeId = nodeIdOf(node);
+  if (!nodeId) {
+    return null;
+  }
+  const updated =
+    typeof node.updated_at === "string" && node.updated_at.length > 0
+      ? node.updated_at
+      : typeof node.updatedAt === "string" && node.updatedAt.length > 0
+        ? node.updatedAt
+        : null;
+  if (updated) {
+    return { node_id: nodeId, updated_at: updated };
   }
   if (typeof node.submitted_at === "string" && node.submitted_at.length > 0) {
     const body = typeof node.body === "string" ? node.body : "";
     const digest = createHash("sha256").update(body).digest("hex").slice(0, 16);
-    return { node_id: node.node_id, updated_at: `${node.submitted_at}#${digest}` };
+    return { node_id: nodeId, updated_at: `${node.submitted_at}#${digest}` };
   }
   return null;
 }
@@ -218,12 +245,55 @@ function viewFor(eventName, payload) {
   return null;
 }
 
+function kindFromHtml(url) {
+  if (typeof url !== "string") {
+    return null;
+  }
+  if (/\/pull\/\d+/.test(url)) {
+    return "pr";
+  }
+  if (/\/issues\/\d+/.test(url)) {
+    return "issue";
+  }
+  if (/\/discussions\/\d+/.test(url)) {
+    return "discussion";
+  }
+  return null;
+}
+
+function parentKind(eventName, fetched) {
+  if (eventName === "issue_comment") {
+    return kindFromHtml(fetched.html_url);
+  }
+  if (
+    eventName === "pull_request" ||
+    eventName === "pull_request_target" ||
+    eventName === "pull_request_review" ||
+    eventName === "pull_request_review_comment"
+  ) {
+    return "pr";
+  }
+  if (eventName === "discussion" || eventName === "discussion_comment") {
+    return "discussion";
+  }
+  if (eventName === "issues") {
+    return "issue";
+  }
+  return null;
+}
+
 function parentNumber(eventName, fetched) {
   if (eventName === "issue_comment") {
     return numberFromUrl(fetched.issue_url);
   }
   if (eventName === "pull_request_review" || eventName === "pull_request_review_comment") {
     return numberFromUrl(fetched.pull_request_url);
+  }
+  if (eventName === "discussion_comment") {
+    if (positiveInt(fetched.discussion?.number)) {
+      return fetched.discussion.number;
+    }
+    return positiveInt(fetched.number) ? fetched.number : null;
   }
   return positiveInt(fetched.number) ? fetched.number : null;
 }
@@ -246,17 +316,20 @@ function replyFor(eventName, fetched, number) {
     return { kind: "review-comment-reply", number, comment_id: fetched.id };
   }
   if (eventName === "discussion") {
-    if (typeof fetched.node_id !== "string") {
+    const discussionId = nodeIdOf(fetched);
+    if (!discussionId) {
       return null;
     }
-    return { kind: "discussion-comment", discussion_id: fetched.node_id, reply_to_id: null };
+    return { kind: "discussion-comment", discussion_id: discussionId, reply_to_id: null };
   }
   if (eventName === "discussion_comment") {
-    const discussionId = fetched.discussion_node_id || fetched.discussion?.node_id;
-    if (typeof discussionId !== "string" || typeof fetched.node_id !== "string") {
+    const discussionId =
+      nodeIdOf(fetched.discussion) || (typeof fetched.discussion_node_id === "string" ? fetched.discussion_node_id : null);
+    const commentId = nodeIdOf(fetched);
+    if (!discussionId || !commentId) {
       return null;
     }
-    return { kind: "discussion-comment", discussion_id: discussionId, reply_to_id: fetched.node_id };
+    return { kind: "discussion-comment", discussion_id: discussionId, reply_to_id: commentId };
   }
   return { kind: "issue-comment", number };
 }
@@ -294,17 +367,19 @@ function repoAllowed(fullName, repos) {
   return repos.some((repo) => lower(repo) === lower(fullName));
 }
 
-function duplicate(seen, eventName, identity) {
+function fetchedRepo(eventName, fetched) {
+  const nested = fetched.discussion?.repository ?? fetched.repository;
+  if (typeof nested?.owner?.login === "string" && typeof nested?.name === "string") {
+    return `${nested.owner.login}/${nested.name}`;
+  }
+  return repoFromUrl(parentUrl(eventName, fetched));
+}
+
+function duplicate(seen, identity) {
   if (!Array.isArray(seen) || !identity) {
     return false;
   }
-  return seen.some(
-    (row) =>
-      row &&
-      row.event_name === eventName &&
-      row.node_id === identity.node_id &&
-      row.updated_at === identity.updated_at,
-  );
+  return seen.some((row) => row && row.node_id === identity.node_id && row.updated_at === identity.updated_at);
 }
 
 export function routeEvent(input) {
@@ -354,7 +429,7 @@ export function routeEvent(input) {
   if (!fetched || typeof fetched !== "object" || Array.isArray(fetched)) {
     return reject("missing_object", view.textSource);
   }
-  const linkedRepo = repoFromUrl(parentUrl(eventName, fetched));
+  const linkedRepo = fetchedRepo(eventName, fetched);
   if (linkedRepo && lower(linkedRepo) !== lower(fullName)) {
     return reject("wrong_repo");
   }
@@ -368,29 +443,31 @@ export function routeEvent(input) {
   }
   const stamp = revisionOf(fetched);
   const number = parentNumber(eventName, fetched);
-  const reply = stamp && number ? replyFor(eventName, fetched, number) : null;
-  if (!stamp || !number || !reply) {
+  const kind = parentKind(eventName, fetched);
+  const reply = stamp && number && kind ? replyFor(eventName, fetched, number) : null;
+  if (!stamp || !number || !kind || !reply) {
     return reject("missing_object", view.textSource);
   }
+  const delivery = canonicalEvent(eventName);
   const ledger = {
-    event_name: eventName,
+    event_name: delivery,
     node_id: stamp.node_id,
     updated_at: stamp.updated_at,
   };
-  if (duplicate(input.seen, eventName, stamp)) {
+  if (duplicate(input.seen, stamp)) {
     return reject("duplicate");
   }
   const { owner, repo } = splitRepo(fullName);
-  const key = threadKey(owner, repo, view.kind, number);
+  const key = threadKey(owner, repo, kind, number);
   return {
     accept: true,
     reason: "ok",
     thread_key: key,
-    agent_name: agentName(owner, repo, view.kind, number),
+    agent_name: agentName(owner, repo, kind, number),
     text_source: view.textSource,
     reply_target: reply,
     ledger,
-    ledger_path: [eventName, pathSegment(stamp.node_id), pathSegment(stamp.updated_at)],
+    ledger_path: [delivery, pathSegment(stamp.node_id), pathSegment(stamp.updated_at)],
   };
 }
 

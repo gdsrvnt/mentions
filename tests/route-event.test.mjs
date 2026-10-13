@@ -16,6 +16,13 @@ function load(name) {
   return JSON.parse(readFileSync(join(fixtures, name), "utf8"));
 }
 
+function canonicalEvent(eventName) {
+  if (eventName === "pull_request" || eventName === "pull_request_target") {
+    return "pull_request";
+  }
+  return eventName;
+}
+
 function threadKey(owner, repo, kind, number) {
   return createHash("sha256")
     .update(JSON.stringify([owner.toLowerCase(), repo.toLowerCase(), kind, String(number)]))
@@ -31,9 +38,14 @@ function apiObject(input) {
     return payload.issue;
   }
   if (eventName === "issue_comment") {
+    const onPull = Boolean(payload.issue?.pull_request);
+    const html = onPull
+      ? `https://github.com/${repo}/pull/${payload.issue.number}#issuecomment-${payload.comment.id}`
+      : `https://github.com/${repo}/issues/${payload.issue.number}#issuecomment-${payload.comment.id}`;
     return {
       ...payload.comment,
       issue_url: `https://api.github.com/repos/${repo}/issues/${payload.issue.number}`,
+      html_url: payload.comment.html_url ?? html,
     };
   }
   if (eventName === "pull_request" || eventName === "pull_request_target") {
@@ -131,9 +143,9 @@ for (const [name, want] of Object.entries(accepts)) {
     }
     assert.match(decision.agent_name, new RegExp(`^[a-f0-9]{8}-${want.kind}-${want.number}$`));
     assert.notEqual(decision.agent_name, decision.thread_key);
-    assert.equal(decision.ledger.event_name, input.event_name);
+    assert.equal(decision.ledger.event_name, canonicalEvent(input.event_name));
     assert.equal(decision.ledger_path.length, 3);
-    assert.equal(decision.ledger_path[0], input.event_name);
+    assert.equal(decision.ledger_path[0], canonicalEvent(input.event_name));
     for (const segment of decision.ledger_path.slice(1)) {
       assert.match(segment, /^[a-f0-9]{64}$/);
     }
