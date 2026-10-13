@@ -1,6 +1,8 @@
 name: ci
 
 on:
+  push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -8,14 +10,23 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install shellcheck
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Install shellcheck
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
 
       - name: Shellcheck
         run: shellcheck scripts/install.sh scripts/test.sh
@@ -24,10 +35,31 @@ jobs:
         run: |
           set -euo pipefail
           version="1.7.12"
-          checksum="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
-          archive="/tmp/actionlint_${version}_linux_amd64.tar.gz"
-          curl -fsSL -o "$archive" "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
-          echo "${checksum}  ${archive}" | sha256sum -c -
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)
+              asset="linux_amd64"
+              checksum="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+              ;;
+            Darwin-arm64)
+              asset="darwin_arm64"
+              checksum="aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f"
+              ;;
+            Darwin-x86_64)
+              asset="darwin_amd64"
+              checksum="5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644"
+              ;;
+            *)
+              echo "unsupported runner: $(uname -s)-$(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          archive="/tmp/actionlint_${version}_${asset}.tar.gz"
+          curl -fsSL -o "$archive" "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_${asset}.tar.gz"
+          if command -v sha256sum >/dev/null 2>&1; then
+            echo "${checksum}  ${archive}" | sha256sum -c -
+          else
+            echo "${checksum}  ${archive}" | shasum -a 256 -c -
+          fi
           sudo tar -C /usr/local/bin -xzf "$archive" actionlint
           actionlint -version
 
@@ -36,6 +68,9 @@ jobs:
 
       - name: Tests
         run: bash scripts/test.sh
+
+      - name: Route tests
+        run: node --test tests/route-event.test.mjs
 
       - name: Validate plugin manifest
         run: node scripts/validate-plugin.mjs

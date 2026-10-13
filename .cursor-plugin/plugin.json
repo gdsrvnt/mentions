@@ -1,13 +1,22 @@
 {
   "name": "mentions",
-  "displayName": "Mentions",
-  "version": "1.0.0",
-  "description": "Forward configured GitHub @mentions to a webhook and handle them with an acknowledgement, milestone progress, and a verified reply.",
+  "displayName": "GitHub Mentions",
+  "version": "1.1.0",
+  "description": "Forward a chosen person's GitHub @mentions to a Grok Bot routine, then reply on the same thread from a bot account.",
   "author": {
-    "name": "ArchAgents",
-    "email": "304431358+ArchAgents@users.noreply.github.com"
+    "name": "gdsrvnt",
+    "email": "336766788+gdsrvnt@users.noreply.github.com"
   },
   "license": "MIT",
-  "keywords": ["github", "mentions", "webhook", "automation"],
-  "category": "developer-tools"
+  "keywords": ["github", "mentions", "webhook", "grok", "grok-bot", "github-actions", "routines", "automation"],
+  "tags": ["github", "grok-bot", "mentions", "automation"],
+  "category": "developer-tools",
+  "homepage": "https://github.com/gdsrvnt/mentions",
+  "repository": "https://github.com/gdsrvnt/mentions",
+  "logo": "assets/logo.svg",
+  "minClientVersions": {
+    "cursor": "never",
+    "grokbot": "0.49.0",
+    "sand": "0.49.0"
+  }
 }

@@ -1,48 +1,12 @@
 #!/usr/bin/env node
-/**
- * Manifest validator for this single-plugin repository.
- *
- * The cursor-plugins script `scripts/validate-plugins.mjs` cannot validate this
- * repository. It hard-codes the cursor-plugins checkout as its root, requires
- * that checkout's `.cursor-plugin/marketplace.json`, and imports `ajv`. This
- * script is the local equivalent: it checks `.cursor-plugin/plugin.json`
- * against the plugin schema's required name, kebab-case pattern, author shape,
- * closed property set, and relative component paths, then checks skill
- * frontmatter.
- */
+// Check plugin.json against the vendored Cursor plugin schema, then skill frontmatter.
 
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
-import { dirname, join, resolve } from "path";
-import { fileURLToPath } from "url";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const allowedKeys = new Set([
-  "name",
-  "displayName",
-  "description",
-  "version",
-  "minClientVersions",
-  "author",
-  "publisher",
-  "homepage",
-  "repository",
-  "license",
-  "logo",
-  "keywords",
-  "category",
-  "tags",
-  "commands",
-  "agents",
-  "skills",
-  "rules",
-  "hooks",
-  "variables",
-  "mcpServers",
-]);
 const namePattern = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
-const semverPattern =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?$/;
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 let errors = 0;
 
@@ -59,20 +23,6 @@ function unquote(value) {
     return value.slice(1, -1);
   }
   return value;
-}
-
-function assertRelative(value, label) {
-  if (typeof value !== "string" || value.length === 0) {
-    fail(`${label} must be a non-empty relative path`);
-    return;
-  }
-  if (value.startsWith("/") || value.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(value)) {
-    fail(`${label} must be a relative path, got "${value}"`);
-  }
-  const parts = value.split(/[\\/]+/);
-  if (parts.includes("..")) {
-    fail(`${label} must not contain parent traversal, got "${value}"`);
-  }
 }
 
 function parseFrontmatter(text, label) {
@@ -104,8 +54,7 @@ function parseFrontmatter(text, label) {
       }
     }
   }
-  const body = text.slice(match[0].length).trim();
-  return { name, description, body };
+  return { name, description, body: text.slice(match[0].length).trim() };
 }
 
 function checkSkillFile(skillPath, expectedName) {
@@ -126,6 +75,8 @@ function checkSkillFile(skillPath, expectedName) {
   }
   if (!parsed.description) {
     fail(`${skillPath}: frontmatter description is required`);
+  } else if (parsed.description.length > 1024) {
+    fail(`${skillPath}: description is longer than 1024 characters`);
   }
   if (!parsed.body) {
     fail(`${skillPath}: skill body is empty`);
@@ -152,81 +103,145 @@ function checkDefaultSkills() {
   }
 }
 
-const pluginPath = join(root, ".cursor-plugin", "plugin.json");
+function schemaErrors(rootSchema, value) {
+  const found = [];
+  const handled = new Set([
+    "$schema", "$id", "title", "description", "$defs", "definitions", "type", "required",
+    "additionalProperties", "properties", "pattern", "minLength", "minProperties", "items",
+    "uniqueItems", "const", "oneOf", "anyOf", "enum", "$ref", "format",
+  ]);
+  const deref = (ref) => ref.replace(/^#\//, "").split("/").reduce((node, key) => node?.[key], rootSchema);
+  const typeOf = (item) => (Array.isArray(item) ? "array" : item === null ? "null" : Number.isInteger(item) ? "integer" : typeof item);
+  function check(schema, item, path) {
+    if (!schema) {
+      found.push(`${path || "/"}: unresolved schema`);
+      return;
+    }
+    if (schema.$ref) {
+      check(deref(schema.$ref), item, path);
+      return;
+    }
+    for (const key of Object.keys(schema)) {
+      if (!handled.has(key)) {
+        found.push(`${path || "/"}: unsupported schema keyword "${key}"`);
+      }
+    }
+    if (schema.type) {
+      const actual = typeOf(item);
+      const ok = [].concat(schema.type).some((want) => want === actual || (want === "number" && actual === "integer"));
+      if (!ok) {
+        found.push(`${path || "/"}: must be ${schema.type}, got ${actual}`);
+        return;
+      }
+    }
+    if (schema.const !== undefined && item !== schema.const) {
+      found.push(`${path || "/"}: must equal ${JSON.stringify(schema.const)}`);
+    }
+    if (schema.enum && !schema.enum.includes(item)) {
+      found.push(`${path || "/"}: must be one of ${JSON.stringify(schema.enum)}`);
+    }
+    if (typeof item === "string") {
+      if (schema.minLength !== undefined && item.length < schema.minLength) {
+        found.push(`${path}: shorter than ${schema.minLength}`);
+      }
+      if (schema.pattern && !new RegExp(schema.pattern, "u").test(item)) {
+        found.push(`${path}: does not match ${schema.pattern}`);
+      }
+      if (schema.format === "uri") {
+        try {
+          const url = new URL(item);
+          if (!url.protocol) {
+            throw new Error("relative");
+          }
+        } catch {
+          found.push(`${path}: not an absolute URI`);
+        }
+      }
+      if (schema.format === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(item)) {
+        found.push(`${path}: not an email address`);
+      }
+    }
+    if (Array.isArray(item)) {
+      if (schema.items) {
+        item.forEach((entry, index) => check(schema.items, entry, `${path}/${index}`));
+      }
+      if (schema.uniqueItems && new Set(item.map((entry) => JSON.stringify(entry))).size !== item.length) {
+        found.push(`${path}: items must be unique`);
+      }
+    }
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      for (const req of schema.required ?? []) {
+        if (!(req in item)) {
+          found.push(`${path || "/"}: missing required property "${req}"`);
+        }
+      }
+      if (schema.minProperties !== undefined && Object.keys(item).length < schema.minProperties) {
+        found.push(`${path || "/"}: needs at least ${schema.minProperties} properties`);
+      }
+      for (const [key, sub] of Object.entries(item)) {
+        if (schema.properties?.[key]) {
+          check(schema.properties[key], sub, `${path}/${key}`);
+        } else if (schema.additionalProperties === false) {
+          found.push(`${path || "/"}: unsupported property "${key}"`);
+        } else if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+          check(schema.additionalProperties, sub, `${path}/${key}`);
+        }
+      }
+    }
+    for (const [keyword, need] of [["oneOf", 1], ["anyOf", 0]]) {
+      if (!schema[keyword]) {
+        continue;
+      }
+      let passing = 0;
+      for (const option of schema[keyword]) {
+        const saved = found.length;
+        check(option, item, path);
+        if (found.length === saved) {
+          passing += 1;
+        }
+        found.length = saved;
+      }
+      if (keyword === "oneOf" ? passing !== need : passing === 0) {
+        found.push(`${path || "/"}: must match ${keyword}`);
+      }
+    }
+  }
+  check(rootSchema, value, "");
+  return found;
+}
+
+const schemaPath = join(root, "docs/schemas/plugin.schema.json");
+const pluginPath = join(root, ".cursor-plugin/plugin.json");
+let plugin = null;
+if (!existsSync(schemaPath)) {
+  fail(`missing vendored schema ${schemaPath}`);
+}
 if (!existsSync(pluginPath)) {
   fail(".cursor-plugin/plugin.json not found");
 } else {
-  let plugin;
   try {
     plugin = JSON.parse(readFileSync(pluginPath, "utf8"));
   } catch (error) {
     fail(`plugin.json is not valid JSON: ${error.message}`);
     plugin = null;
   }
-  if (plugin && (typeof plugin !== "object" || Array.isArray(plugin))) {
-    fail("plugin.json must be an object");
-    plugin = null;
+  if (plugin && existsSync(schemaPath)) {
+    const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
+    for (const message of schemaErrors(schema, plugin)) {
+      fail(`plugin.json ${message}`);
+    }
   }
-  if (plugin) {
-    for (const key of Object.keys(plugin)) {
-      if (!allowedKeys.has(key)) {
-        fail(`plugin.json has unsupported property "${key}"`);
-      }
+  if (plugin && typeof plugin.logo === "string" && !/^https?:/.test(plugin.logo)) {
+    if (!existsSync(join(root, plugin.logo))) {
+      fail(`plugin.json logo does not exist: ${plugin.logo}`);
     }
-    if (typeof plugin.name !== "string" || !namePattern.test(plugin.name)) {
-      fail('plugin.json name must be kebab-case matching "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"');
-    }
-    if (typeof plugin.description !== "string" || plugin.description.trim() === "") {
-      fail("plugin.json description must be a non-empty string");
-    }
-    if (typeof plugin.version !== "string" || !semverPattern.test(plugin.version)) {
-      fail('plugin.json version must be a semantic version such as "1.0.0"');
-    }
-    if (typeof plugin.license !== "string" || plugin.license.trim() === "") {
-      fail("plugin.json license must be a non-empty string");
-    }
-    if (!plugin.author || typeof plugin.author !== "object" || Array.isArray(plugin.author)) {
-      fail("plugin.json author must be an object with a name");
-    } else {
-      if (typeof plugin.author.name !== "string" || plugin.author.name.trim() === "") {
-        fail("plugin.json author.name is required");
-      }
-      const authorKeys = Object.keys(plugin.author);
-      for (const key of authorKeys) {
-        if (key !== "name" && key !== "email") {
-          fail(`plugin.json author has unsupported property "${key}"`);
-        }
-      }
-      if (plugin.author.email !== undefined && !emailPattern.test(plugin.author.email)) {
-        fail("plugin.json author.email is not a valid email address");
-      }
-    }
-    if (plugin.keywords !== undefined) {
-      if (!Array.isArray(plugin.keywords) || plugin.keywords.some((item) => typeof item !== "string")) {
-        fail("plugin.json keywords must be an array of strings");
-      }
-    }
-    for (const key of ["commands", "agents", "skills", "rules", "logo"]) {
-      const value = plugin[key];
-      if (typeof value === "string") {
-        assertRelative(value, `plugin.json ${key}`);
-      } else if (Array.isArray(value)) {
-        value.forEach((item, index) => assertRelative(item, `plugin.json ${key}[${index}]`));
-      }
-    }
-    if (plugin.skills === undefined) {
-      checkDefaultSkills();
-    } else if (typeof plugin.skills === "string") {
-      checkSkillFile(join(root, plugin.skills), "");
-    } else if (Array.isArray(plugin.skills)) {
-      for (const item of plugin.skills) {
-        if (typeof item === "string") {
-          checkSkillFile(join(root, item), "");
-        }
-      }
-    }
+  }
+  if (plugin && typeof plugin.description === "string" && plugin.description.length > 300) {
+    fail(`plugin.json description is ${plugin.description.length} characters`);
   }
 }
+
+checkDefaultSkills();
 
 for (const filename of ["README.md", "LICENSE", "CHANGELOG.md"]) {
   if (!existsSync(join(root, filename))) {
@@ -234,38 +249,29 @@ for (const filename of ["README.md", "LICENSE", "CHANGELOG.md"]) {
   }
 }
 
-const licensePath = join(root, "LICENSE");
-if (existsSync(licensePath)) {
-  const license = readFileSync(licensePath, "utf8");
-  if (!license.includes("MIT License")) {
-    fail("LICENSE is not the MIT license text");
-  }
-  if (!license.includes("ArchAgents")) {
-    fail("LICENSE must name author ArchAgents");
-  }
+const license = existsSync(join(root, "LICENSE")) ? readFileSync(join(root, "LICENSE"), "utf8") : "";
+if (license && !license.includes("MIT License")) {
+  fail("LICENSE is not the MIT license text");
 }
 
-const readmePath = join(root, "README.md");
-if (existsSync(readmePath)) {
-  const readme = readFileSync(readmePath, "utf8");
-  if (!/install/i.test(readme)) {
-    fail("README.md must describe installation");
-  }
-  if (!readme.includes("skills/setup-mentions/SKILL.md") || !readme.includes("skills/handle-mention/SKILL.md")) {
-    fail("README.md must cover the setup-mentions and handle-mention skills");
+const readme = existsSync(join(root, "README.md")) ? readFileSync(join(root, "README.md"), "utf8") : "";
+if (readme && !/install/i.test(readme)) {
+  fail("README.md must describe installation");
+}
+if (readme && (!readme.includes("skills/setup-mentions/SKILL.md") || !readme.includes("skills/handle-mention/SKILL.md"))) {
+  fail("README.md must cover the setup-mentions and handle-mention skills");
+}
+
+if (plugin && typeof plugin.version === "string") {
+  const changelog = existsSync(join(root, "CHANGELOG.md")) ? readFileSync(join(root, "CHANGELOG.md"), "utf8") : "";
+  if (!changelog.includes(`## [${plugin.version}]`) && !changelog.includes(`## ${plugin.version}`)) {
+    fail(`CHANGELOG.md has no ${plugin.version} heading`);
   }
 }
 
 if (errors > 0) {
-  console.error(`\nValidation failed with ${errors} error(s).`);
-  console.error(
-    "Note: cursor-plugins scripts/validate-plugins.mjs hard-codes that checkout, requires its marketplace.json, and imports ajv. It cannot validate this single-plugin repo. Use scripts/validate-plugin.mjs."
-  );
+  console.error(`Validation failed with ${errors} error(s).`);
   process.exit(1);
 }
 
 console.log("Validated .cursor-plugin/plugin.json and skill frontmatter.");
-console.log(
-  "Note: cursor-plugins scripts/validate-plugins.mjs hard-codes that checkout, requires its marketplace.json, and imports ajv. It cannot validate this single-plugin repo. Use scripts/validate-plugin.mjs."
-);
-process.exit(0);
