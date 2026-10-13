@@ -206,6 +206,7 @@ assert_contains "$help_out" "--config"
 assert_contains "$help_out" "--commit-name"
 assert_contains "$help_out" "--commit-email"
 assert_contains "$help_out" "--comments-only"
+assert_contains "$help_out" "Pull requests write"
 "$install" -h > "${tmp}/help-short.out"
 
 stamp="${tmp}/network-stamp"
@@ -245,7 +246,7 @@ fi
 if [[ "${1:-}" == "api" ]]; then
   case "${2:-}" in
     users/*) printf '%s\n' "Alice"; exit 0 ;;
-    repos/*) printf '%s\n' "true"; exit 0 ;;
+    repos/*) printf '%s\n' '{"permissions":{"push":true}}'; exit 0 ;;
   esac
   printf 'unexpected api: %s\n' "$*" >&2
   exit 1
@@ -438,7 +439,7 @@ fi
 if [[ "${1:-}" == "api" ]]; then
   case "${2:-}" in
     users/*) printf '%s\n' "alice"; exit 0 ;;
-    repos/*) printf '%s\n' "true"; exit 0 ;;
+    repos/*) printf '%s\n' '{"permissions":{"push":true}}'; exit 0 ;;
   esac
   printf 'unexpected api: %s\n' "$*" >&2
   exit 1
@@ -513,7 +514,7 @@ fi
 if [[ "${1:-}" == "api" ]]; then
   case "${2:-}" in
     users/*) printf '%s\n' "alice"; exit 0 ;;
-    repos/*) printf '%s\n' "true"; exit 0 ;;
+    repos/*) printf '%s\n' '{"permissions":{"push":true}}'; exit 0 ;;
   esac
   exit 1
 fi
@@ -542,5 +543,160 @@ if ! git -C "$lost_bare" show-ref --verify --quiet refs/heads/mentions/my-bot-fo
 fi
 assert_contains "${tmp}/lost.err" "https://example.invalid/pull/9"
 assert_contains "${tmp}/lost.err" "kept branch mentions/my-bot-forward"
+
+closed_bare="${tmp}/closed.git"
+closed_work="${tmp}/closed-seed"
+seed_bare "$closed_bare" "$closed_work"
+closed_bin="${tmp}/closedbin"
+mkdir -p "$closed_bin"
+cat > "${closed_bin}/gh" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "api" ]]; then
+  case "${2:-}" in
+    users/*) printf '%s\n' "alice"; exit 0 ;;
+    repos/*) printf '%s\n' '{"permissions":{"push":true}}'; exit 0 ;;
+  esac
+  exit 1
+fi
+if [[ "${1:-}" == "repo" && "${2:-}" == "clone" ]]; then
+  dest="${4:?dest}"
+  git clone --quiet "${MENTIONS_TEST_BARE:?}" "$dest"
+  exit 0
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+  exit 1
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  if [[ "$*" == *"--state all"* ]]; then
+    printf '%s\n' "https://example.invalid/pull/3"
+    exit 0
+  fi
+  printf '%s\n' "null"
+  exit 0
+fi
+printf 'fake gh refusing: %s\n' "$*" >&2
+exit 1
+EOF
+chmod +x "${closed_bin}/gh"
+PATH="${closed_bin}:${PATH}" MENTIONS_TEST_BARE="$closed_bare" MENTIONS_CONFIG="${tmp}/closed-config.json" \
+  "$install" "example/mentions" --user Alice --bot my-bot --commit-name "Mentions Bot" --commit-email "bot@example.com" > "${tmp}/closed.out" 2>"${tmp}/closed.err"
+if ! git -C "$closed_bare" show-ref --verify --quiet refs/heads/mentions/my-bot-forward; then
+  fail "branch was deleted although a closed pull request exists: $(cat "${tmp}/closed.err")"
+fi
+assert_contains "${tmp}/closed.err" "https://example.invalid/pull/3"
+assert_contains "${tmp}/closed.err" "kept branch mentions/my-bot-forward"
+
+denied_bare="${tmp}/denied.git"
+denied_work="${tmp}/denied-seed"
+seed_bare "$denied_bare" "$denied_work"
+denied_bin="${tmp}/deniedbin"
+mkdir -p "$denied_bin"
+cat > "${denied_bin}/gh" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "api" ]]; then
+  case "${2:-}" in
+    users/*) printf '%s\n' "alice"; exit 0 ;;
+    repos/*) printf '%s\n' '{"permissions":{"push":true,"pull_requests":false}}'; exit 0 ;;
+  esac
+  exit 1
+fi
+if [[ "${1:-}" == "repo" && "${2:-}" == "clone" ]]; then
+  dest="${4:?dest}"
+  git clone --quiet "${MENTIONS_TEST_BARE:?}" "$dest"
+  exit 0
+fi
+printf 'fake gh refusing: %s\n' "$*" >&2
+exit 1
+EOF
+chmod +x "${denied_bin}/gh"
+set +e
+PATH="${denied_bin}:${PATH}" MENTIONS_TEST_BARE="$denied_bare" MENTIONS_CONFIG="${tmp}/denied-config.json" \
+  "$install" "example/mentions" --user Alice --bot my-bot --commit-name "Mentions Bot" --commit-email "bot@example.com" > "${tmp}/denied.out" 2>"${tmp}/denied.err"
+denied_status=$?
+set -e
+if [[ "$denied_status" -eq 0 ]]; then
+  fail "install should stop when Pull requests write is missing"
+fi
+if git -C "$denied_bare" show-ref --verify --quiet refs/heads/mentions/my-bot-forward; then
+  fail "install pushed before the Pull requests permission check"
+fi
+assert_contains "${tmp}/denied.err" "Pull requests write"
+
+sig_bare="${tmp}/sig.git"
+sig_work="${tmp}/sig-seed"
+seed_bare "$sig_bare" "$sig_work"
+sig_bin="${tmp}/sigbin"
+mkdir -p "$sig_bin"
+sig_url="${tmp}/sig.url"
+sig_pid="${tmp}/sig.pid"
+cat > "${sig_bin}/gh" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "api" ]]; then
+  case "${2:-}" in
+    users/*) printf '%s\n' "alice"; exit 0 ;;
+    repos/*) printf '%s\n' '{"permissions":{"push":true}}'; exit 0 ;;
+  esac
+  exit 1
+fi
+if [[ "${1:-}" == "repo" && "${2:-}" == "clone" ]]; then
+  dest="${4:?dest}"
+  git clone --quiet "${MENTIONS_TEST_BARE:?}" "$dest"
+  exit 0
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+  printf '%s\n' "https://example.invalid/pull/4" > "${MENTIONS_SIG_URL:?}"
+  sleep 60 &
+  printf '%s\n' "$!" > "${MENTIONS_SIG_PID:?}"
+  wait "$!"
+  exit 1
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  if [[ -s "${MENTIONS_SIG_URL:?}" ]]; then
+    cat "${MENTIONS_SIG_URL}"
+    exit 0
+  fi
+  printf '%s\n' "null"
+  exit 0
+fi
+printf 'fake gh refusing: %s\n' "$*" >&2
+exit 1
+EOF
+chmod +x "${sig_bin}/gh"
+PATH="${sig_bin}:${PATH}" MENTIONS_TEST_BARE="$sig_bare" MENTIONS_SIG_URL="$sig_url" MENTIONS_SIG_PID="$sig_pid" MENTIONS_CONFIG="${tmp}/sig-config.json" \
+  "$install" "example/mentions" --user Alice --bot my-bot --commit-name "Mentions Bot" --commit-email "bot@example.com" > "${tmp}/sig.out" 2>"${tmp}/sig.err" &
+sig_install=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if [[ -s "$sig_url" && -s "$sig_pid" ]]; then
+    break
+  fi
+  sleep 0.1
+done
+if [[ ! -s "$sig_url" || ! -s "$sig_pid" ]]; then
+  kill -TERM "$sig_install" 2>/dev/null || true
+  fail "pull request create did not start before the signal: $(cat "${tmp}/sig.err")"
+fi
+kill -TERM "$sig_install"
+if [[ -s "$sig_pid" ]]; then
+  kill -TERM "$(cat "$sig_pid")" 2>/dev/null || true
+fi
+set +e
+wait "$sig_install"
+set -e
+if ! git -C "$sig_bare" show-ref --verify --quiet refs/heads/mentions/my-bot-forward; then
+  fail "branch was deleted after SIGTERM: $(cat "${tmp}/sig.err")"
+fi
+assert_contains "${tmp}/sig.err" "kept branch mentions/my-bot-forward"
 
 printf '%s\n' "ok"

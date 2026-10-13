@@ -107,8 +107,10 @@ Those values commit the workflow. They are not written into the handler config.
 After a push, the script asks GitHub whether a pull request for the branch
 exists. It deletes the branch only when that query succeeds and no pull request
 is there. If the query fails, the branch is kept. This script does not embed
-tokens. The setup credential needs Contents write, Workflows write, and
-Secrets write on the repository. The runtime bot token does not.
+tokens. The setup credential needs Contents write, Pull requests write,
+Workflows write, and Secrets write on the repository. The push preflight
+sees repository push access only. It does not prove those fine-grained
+scopes. The runtime bot token does not get Workflows or Secrets write.
 
 commit_comment is not an Actions trigger. actionlint rejects a workflow that
 subscribes to it.
@@ -125,8 +127,42 @@ die() {
   exit 1
 }
 
+confirm_pull_request() {
+  local found list_status
+  if [[ -z "${repo_arg:-}" || -z "${branch_name:-}" ]]; then
+    return 2
+  fi
+  set +e
+  found="$(gh pr list --repo "$repo_arg" --head "$branch_name" --state all --json url --jq '.[0].url' 2>/dev/null | tr -d '[:space:]')"
+  list_status=$?
+  set -e
+  if [[ "$list_status" -ne 0 ]]; then
+    return 2
+  fi
+  if [[ -n "$found" && "$found" != "null" ]]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  return 1
+}
+
 cleanup() {
   local ec=$?
+  local found query
+  if [[ "$ec" -ne 0 && "$did_push" -eq 1 ]]; then
+    set +e
+    found="$(confirm_pull_request)"
+    query=$?
+    set -e
+    if [[ "$query" -eq 0 ]]; then
+      printf 'pull request exists: %s\n' "$found" >&2
+      printf 'kept branch %s\n' "$branch_name" >&2
+      did_push=0
+    elif [[ "$query" -ne 1 ]]; then
+      printf 'could not confirm whether a pull request exists; kept branch %s\n' "$branch_name" >&2
+      did_push=0
+    fi
+  fi
   if [[ "$ec" -ne 0 && "$did_push" -eq 1 && -n "$clone_dir" && -d "$clone_dir" ]]; then
     printf 'rollback: deleting remote branch %s\n' "$branch_name" >&2
     if ! git -C "$clone_dir" push --quiet origin ":refs/heads/${branch_name}"; then
@@ -648,7 +684,7 @@ merge_config() {
 }
 
 run_install() {
-  local base_branch pr_url body_file pr_title pr_status found list_status
+  local base_branch pr_url body_file pr_title pr_status found list_status perm
   export GIT_TERMINAL_PROMPT=0
   export GH_PROMPT_DISABLED=1
   if ! command -v gh >/dev/null 2>&1; then
@@ -679,8 +715,12 @@ run_install() {
   if [[ -e "${clone_dir}/.github/workflows/mention-forward.yml" && "$do_update" -eq 0 ]]; then
     die "workflow already exists: .github/workflows/mention-forward.yml (re-run with --update)"
   fi
-  if ! gh api "repos/${repo_arg}" --jq '(.permissions.push == true or .permissions.admin == true or .permissions.maintain == true)' | grep -qx true; then
-    die "setup credential cannot push to ${repo_arg}. It needs Contents write, Workflows write, and Secrets write. The runtime bot token does not get Workflows or Secrets."
+  perm="$(gh api "repos/${repo_arg}")" || die "could not read repository permissions for ${repo_arg}"
+  if printf '%s' "$perm" | jq -e '.permissions.pull_requests == false or .permissions.pull_requests == "read"' >/dev/null; then
+    die "setup credential cannot open a pull request on ${repo_arg}. It needs Pull requests write, plus Contents write, Workflows write, and Secrets write. The push preflight does not prove those scopes. The runtime bot token does not get Workflows or Secrets."
+  fi
+  if ! printf '%s' "$perm" | jq -e '(.permissions.push == true or .permissions.admin == true or .permissions.maintain == true)' >/dev/null; then
+    die "setup credential cannot push to ${repo_arg}. It needs Contents write, Pull requests write, Workflows write, and Secrets write. This preflight sees repository push access only. The runtime bot token does not get Workflows or Secrets."
   fi
   git -C "$clone_dir" checkout -q -b "$branch_name"
   write_workflow "${clone_dir}/.github/workflows"
@@ -700,15 +740,15 @@ run_install() {
   if [[ "$pr_status" -ne 0 ]]; then
     printf 'pr create failed; checking for an existing pull request\n' >&2
     set +e
-    found="$(gh pr list --repo "$repo_arg" --head "$branch_name" --state open --json url --jq '.[0].url' 2>"${tmp_root}/pr-list.err" | tr -d '[:space:]')"
+    found="$(confirm_pull_request)"
     list_status=$?
     set -e
-    if [[ "$list_status" -eq 0 && -n "$found" && "$found" != "null" ]]; then
+    if [[ "$list_status" -eq 0 ]]; then
       did_push=0
       pr_url="$found"
       printf 'pull request exists: %s\n' "$pr_url" >&2
       printf 'kept branch %s\n' "$branch_name" >&2
-    elif [[ "$list_status" -eq 0 ]]; then
+    elif [[ "$list_status" -eq 1 ]]; then
       printf 'no pull request for %s\n' "$branch_name" >&2
       die "pull request was not created"
     else
