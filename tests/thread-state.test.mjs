@@ -67,11 +67,75 @@ test("a later comment on the same thread steers and keeps the first request", ()
     ...base(dir),
     op: "claim",
     ledger_path: otherLedger,
+    agent_alive: true,
     request_text: "Request from octo-user\n@helper-bot again",
   });
   assert.equal(steer.action, "steer");
   assert.equal(readFileSync(claimed.request_path, "utf8"), firstText);
   assert.match(readFileSync(steer.request_path, "utf8"), /again/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a distinct busy request is stored for retry", () => {
+  const dir = scratch();
+  const first = threadOp({ ...base(dir), op: "claim" });
+  assert.equal(first.ok, true);
+  const second = threadOp({
+    ...base(dir),
+    op: "claim",
+    ledger_path: otherLedger,
+    request_text: "Request from octo-user\n@helper-bot other",
+  });
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, "busy");
+  assert.match(readFileSync(second.request_path, "utf8"), /other/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("each thread gets its own work directory", () => {
+  const dir = scratch();
+  const left = threadOp({ ...base(dir), op: "claim" });
+  threadOp({ ...base(dir), op: "release", token: left.token });
+  const right = threadOp({
+    ...base(dir, { thread_key: "fedcba9876543210" }),
+    op: "claim",
+  });
+  assert.match(left.work_dir, /octo-org\/sandbox\/0123456789abcdef$/);
+  assert.match(right.work_dir, /octo-org\/sandbox\/fedcba9876543210$/);
+  assert.notEqual(left.work_dir, right.work_dir);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a vanished agent is launched again instead of steered", () => {
+  const dir = scratch();
+  const claimed = threadOp({ ...base(dir), op: "claim" });
+  threadOp({ ...base(dir), op: "commit", token: claimed.token });
+  const again = threadOp({
+    ...base(dir),
+    op: "claim",
+    ledger_path: otherLedger,
+    agent_alive: false,
+    request_text: "Request from octo-user\n@helper-bot next",
+  });
+  assert.equal(again.ok, true);
+  assert.equal(again.action, "launch");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("release marks a running job failed", () => {
+  const dir = scratch();
+  const claimed = threadOp({ ...base(dir), op: "claim" });
+  threadOp({ ...base(dir), op: "commit", token: claimed.token });
+  const released = threadOp({ ...base(dir), op: "release", token: "not-the-lease" });
+  assert.equal(released.ok, false);
+  const held = threadOp({ ...base(dir), op: "claim", agent_alive: true, ledger_path: otherLedger });
+  assert.equal(held.action, "steer");
+  const failed = threadOp({ ...base(dir), op: "release", token: held.token });
+  assert.equal(failed.status, "failed");
+  const job = JSON.parse(readFileSync(held.job_path, "utf8"));
+  assert.equal(job.status, "failed");
+  const retry = threadOp({ ...base(dir), op: "claim", ledger_path: ["issue_comment", "e".repeat(64), "f".repeat(64)] });
+  assert.equal(retry.action, "launch");
   rmSync(dir, { recursive: true, force: true });
 });
 

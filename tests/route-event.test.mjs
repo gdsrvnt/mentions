@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { routeEvent } from "../scripts/route-event.mjs";
+import { threadOp } from "../scripts/thread-state.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(root, "fixtures");
@@ -262,6 +264,106 @@ test("the review comment reply target carries the comment id", () => {
 test("the issue comment text source is the comment, not the issue", () => {
   const decision = finish(load("issue-comment-on-pr.json"));
   assert.equal(decision.text_source.path, "/repos/octo-org/sandbox/issues/comments/1001");
+});
+
+test("a pull_request alias is the same delivery as pull_request_target", () => {
+  const input = load("pull-request-target.json");
+  const first = finish(input);
+  assert.equal(first.accept, true);
+  assert.equal(first.ledger_path[0], "pull_request");
+  const alias = finish({ ...input, event_name: "pull_request", seen: [first.ledger] });
+  assert.equal(alias.accept, false);
+  assert.equal(alias.reason, "duplicate");
+  const dir = mkdtempSync(join(tmpdir(), "mentions-alias-"));
+  const claimed = threadOp({
+    op: "claim",
+    state_dir: join(dir, "state"),
+    work_root: join(dir, "work"),
+    thread_key: first.thread_key,
+    owner: "octo-org",
+    repo: "sandbox",
+    ledger_path: first.ledger_path,
+    request_text: "Request from octo-user",
+    agent_name: first.agent_name,
+    reply_target: first.reply_target,
+  });
+  assert.equal(claimed.ok, true);
+  threadOp({
+    op: "commit",
+    state_dir: join(dir, "state"),
+    thread_key: first.thread_key,
+    token: claimed.token,
+    ledger_path: first.ledger_path,
+    agent_name: first.agent_name,
+    reply_target: first.reply_target,
+  });
+  const replay = threadOp({
+    op: "claim",
+    state_dir: join(dir, "state"),
+    work_root: join(dir, "work"),
+    thread_key: first.thread_key,
+    owner: "octo-org",
+    repo: "sandbox",
+    ledger_path: first.ledger_path,
+    request_text: "Request from octo-user",
+    agent_name: first.agent_name,
+    reply_target: first.reply_target,
+  });
+  assert.equal(replay.reason, "duplicate");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a forged pull_request flag does not change the thread kind", () => {
+  const input = load("issue-comment.json");
+  const fetched = structuredClone(apiObject(input));
+  fetched.html_url = "https://github.com/octo-org/sandbox/issues/4#issuecomment-1001";
+  input.payload.issue.pull_request = { url: "https://api.github.com/repos/octo-org/sandbox/pulls/4" };
+  const decision = finish({ ...input, fetched });
+  assert.equal(decision.accept, true);
+  assert.equal(decision.thread_key, threadKey("octo-org", "sandbox", "issue", 4));
+  const forged = structuredClone(input);
+  forged.payload.issue.pull_request = { url: "https://api.github.com/repos/octo-org/sandbox/pulls/4" };
+  const other = finish({ ...forged, fetched });
+  assert.equal(other.thread_key, decision.thread_key);
+});
+
+test("a GraphQL discussion comment is accepted without webhook fields", () => {
+  const input = load("discussion-comment.json");
+  const fetched = {
+    id: "DC_8",
+    updatedAt: "2026-10-12T06:00:00Z",
+    body: "@helper-bot one more question",
+    author: { login: "octo-user" },
+    discussion: {
+      id: "D_3",
+      number: 3,
+      repository: { name: "sandbox", owner: { login: "octo-org" } },
+    },
+  };
+  const decision = finish({ ...input, fetched });
+  assert.equal(decision.accept, true);
+  assert.equal(decision.reason, "ok");
+  assert.equal(decision.thread_key, threadKey("octo-org", "sandbox", "discussion", 3));
+  assert.equal(decision.reply_target.discussion_id, "D_3");
+  assert.equal(decision.reply_target.reply_to_id, "DC_8");
+});
+
+test("a GraphQL discussion is accepted without REST field names", () => {
+  const input = load("discussion.json");
+  const fetched = {
+    id: "D_3",
+    number: 3,
+    title: "Hello @helper-bot",
+    body: "How does install work?",
+    updatedAt: "2026-10-12T05:00:00Z",
+    author: { login: "octo-user" },
+    repository: { name: "sandbox", owner: { login: "octo-org" } },
+  };
+  const decision = finish({ ...input, fetched });
+  assert.equal(decision.accept, true);
+  assert.equal(decision.thread_key, threadKey("octo-org", "sandbox", "discussion", 3));
+  assert.equal(decision.reply_target.discussion_id, "D_3");
+  assert.equal(decision.reply_target.reply_to_id, null);
 });
 
 test("stdin CLI prints one JSON decision", () => {
