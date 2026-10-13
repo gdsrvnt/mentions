@@ -31,7 +31,7 @@
 
 ### Security
 
-- The handler fetches the comment from GitHub and does not execute the webhook body. The ledger and the reply thread come from that fetched object.
+- The handler fetches the comment from GitHub and does not execute the webhook body. The ledger and the reply thread come from that fetched object. Equivalent pull request event names share one delivery. Discussion comments accept GitHub's GraphQL field names.
 - A lost pull request response keeps the branch when GitHub already opened the pull request.
 - Reviews use `submitted_at` when GitHub does not send `updated_at`. Fork pull request bodies are forwarded. Fork reviews are not.
 - Context from other people is marked untrusted. Merges and pushes to the default branch need an explicit verb from the trigger user.

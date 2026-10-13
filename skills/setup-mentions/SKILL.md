@@ -41,9 +41,9 @@ bash scripts/install.sh "<owner/repo>" --user "<login>" --bot "<handle>" --dry-r
 
 Then run the same command without `--dry-run`, and pass `--commit-name` and `--commit-email`, or `--comments-only`. Add `--secret-prefix`, `--branch`, `--comment-as`, `--config`, or `--update` only when the user supplied them.
 
-The script renders `templates/mention-forward.yml`, commits `.github/workflows/mention-forward.yml`, pushes, opens a pull request, and writes the handler config. Before the push it checks that the active `gh` credential can push. That setup credential needs Contents write, Workflows write, and Secrets write on the selected repositories. The runtime bot token does not get Workflows or Secrets write.
+The script renders `templates/mention-forward.yml`, commits `.github/workflows/mention-forward.yml`, pushes, opens a pull request, and writes the handler config. Before the push it checks that the active `gh` credential can push. That setup credential needs Contents write, Pull requests write, Workflows write, and Secrets write on the selected repositories. The push check does not prove those fine-grained scopes. The runtime bot token does not get Workflows or Secrets write.
 
-If pull request creation fails, the script asks GitHub whether a pull request for that head already exists. It deletes the branch only when the query succeeds and no pull request is there. If the query fails, or a pull request exists, it keeps the branch and prints it. Do not delete that branch by hand. Fix the reported cause and run `scripts/install.sh` again.
+If pull request creation fails, or the script is interrupted after the push, it asks GitHub whether any pull request for that head exists, including a closed one. It deletes the branch only when that query succeeds and no pull request is there. If the query fails, or a pull request exists, it keeps the branch and prints it. Do not delete that branch by hand. Fix the reported cause and run `scripts/install.sh` again.
 
 ## Secrets
 

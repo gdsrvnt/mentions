@@ -144,7 +144,7 @@ Create a machine user, or reuse one that is not the trigger user.
 
 Use two fine-grained PATs. Do not use a classic PAT. A classic PAT makes a prompt injection account-wide.
 
-The setup credential installs the workflow. Limit it to the repositories you select. It needs Contents write, Workflows write, and Secrets write so it can push `.github/workflows/mention-forward.yml`, open the pull request, and set the Actions secrets. `scripts/install.sh` checks that this credential can push before it creates the branch. The machine that runs the installer also needs its own `git user.name` and `git user.email`. Those values commit the workflow file. They are not the bot identity.
+The setup credential installs the workflow. Limit it to the repositories you select. It needs Contents write, Pull requests write, Workflows write, and Secrets write so it can push `.github/workflows/mention-forward.yml`, open the pull request, and set the Actions secrets. `scripts/install.sh` checks that this credential can push before it creates the branch. That check does not prove the fine-grained scopes. The machine that runs the installer also needs its own `git user.name` and `git user.email`. Those values commit the workflow file. They are not the bot identity.
 
 The runtime credential is the token in `gh_token_env`. Limit it to the same repositories. Permissions are Issues read-write, Pull requests read-write, and Discussions read-write. Add Contents read-write only if the agent should commit. Do not grant Workflows write or Secrets write on this token.
 
