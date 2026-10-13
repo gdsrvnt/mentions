@@ -35,7 +35,12 @@ function apiObject(input) {
   const repo = payload.repository.full_name;
   const eventName = input.event_name;
   if (eventName === "issues") {
-    return payload.issue;
+    const issue = payload.issue;
+    return {
+      ...issue,
+      html_url: issue.html_url ?? `https://github.com/${repo}/issues/${issue.number}`,
+      url: issue.url ?? `https://api.github.com/repos/${repo}/issues/${issue.number}`,
+    };
   }
   if (eventName === "issue_comment") {
     const onPull = Boolean(payload.issue?.pull_request);
@@ -49,7 +54,13 @@ function apiObject(input) {
     };
   }
   if (eventName === "pull_request" || eventName === "pull_request_target") {
-    return payload.pull_request;
+    const pull = payload.pull_request;
+    return {
+      ...pull,
+      html_url: pull.html_url ?? `https://github.com/${repo}/pull/${pull.number}`,
+      url: pull.url ?? `https://api.github.com/repos/${repo}/pulls/${pull.number}`,
+      base: pull.base ?? { ref: "main" },
+    };
   }
   if (eventName === "pull_request_review") {
     return {
@@ -61,10 +72,17 @@ function apiObject(input) {
     return {
       ...payload.comment,
       pull_request_url: `https://api.github.com/repos/${repo}/pulls/${payload.pull_request.number}`,
+      html_url:
+        payload.comment.html_url ??
+        `https://github.com/${repo}/pull/${payload.pull_request.number}#discussion_r${payload.comment.id}`,
     };
   }
   if (eventName === "discussion") {
-    return payload.discussion;
+    const discussion = payload.discussion;
+    return {
+      ...discussion,
+      html_url: discussion.html_url ?? `https://github.com/${repo}/discussions/${discussion.number}`,
+    };
   }
   if (eventName === "discussion_comment") {
     return {
@@ -440,6 +458,8 @@ test("a pull request replayed as an issues event is not a second delivery", () =
   assert.equal(honest.thread_key, threadKey("octo-org", "sandbox", "pr", 7));
   assert.equal(issueWrap.accept, false);
   assert.equal(issueWrap.reason, "missing_object");
+  assert.equal(issueWrap.thread_key, null);
+  assert.equal(issueWrap.ledger_path, null);
   assert.equal(pullUnderIssues.accept, false);
   assert.equal(pullUnderIssues.reason, "missing_object");
   assert.equal(issueShapeUnderPull.accept, true);

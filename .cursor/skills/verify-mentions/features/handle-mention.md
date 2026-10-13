@@ -1,6 +1,6 @@
 # Handle a mention
 
-An agent behind the webhook routine receives `{event_name, payload}` and runs the `handle-mention` skill. It calls `scripts/route-event.mjs` twice. The first result is `needs_fetch` plus `text_source`. The agent fetches that GitHub object and calls the router again with `fetched`. The second result supplies `thread_key`, `agent_name`, `reply_target`, `ledger`, and `ledger_path`. Webhook numbers, node ids, and the issue-versus-PR flag are not the thread.
+An agent behind the webhook routine receives `{event_name, payload}` and runs the `handle-mention` skill. It calls `scripts/route-event.mjs` twice. The first result is `needs_fetch` plus `text_source`. The agent fetches that GitHub object and calls the router again with `fetched`. The second result supplies `thread_key`, `agent_name`, `reply_target`, `ledger`, and `ledger_path`. Webhook numbers, node ids, the event name, and the issue-versus-PR flag are not the thread. A fetched issue with `pull_request` is a pull request.
 
 It claims the thread with `scripts/thread-state.mjs` before it posts or launches. A `busy` claim has already stored that request for retry. A `duplicate` claim stops. `launch` and `steer` come from the claim. Steer only when `agent_alive` is true because `herdr` still shows that agent. The reply agent posts progress and the final reply with `-F body=@file`. This skill does not post those, and it does not run a heartbeat.
 

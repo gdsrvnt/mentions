@@ -2,7 +2,7 @@
 // Decide whether a GitHub webhook event is a mention this install should handle.
 // stdin: { event_name, payload, config, seen?, fetched? }
 // stdout: { accept, reason, thread_key, agent_name, text_source, reply_target, ledger, ledger_path }
-// A final accept requires fetched, the GitHub API object. Payload fields do not set the ledger or the thread.
+// A final accept requires fetched, the GitHub API object. The delivery name and the thread kind come from that object. A webhook wrap that names a different object is not a delivery.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -105,11 +105,137 @@ function nodeIdOf(node) {
   return null;
 }
 
-function canonicalEvent(eventName) {
+function canonicalWrap(eventName) {
   if (eventName === "pull_request" || eventName === "pull_request_target") {
     return "pull_request";
   }
   return eventName;
+}
+
+function hasPullRequestMarker(fetched) {
+  const marker = fetched.pull_request;
+  return Boolean(
+    marker && typeof marker === "object" && (typeof marker.url === "string" || typeof marker.html_url === "string"),
+  );
+}
+
+function isDiscussionComment(fetched) {
+  const discussion = fetched.discussion;
+  if (
+    discussion &&
+    typeof discussion === "object" &&
+    (positiveInt(discussion.number) || nodeIdOf(discussion)) &&
+    typeof fetched.body === "string" &&
+    typeof fetched.title !== "string"
+  ) {
+    return true;
+  }
+  if (typeof fetched.discussion_node_id === "string" && fetched.discussion_node_id.length > 0 && typeof fetched.body === "string") {
+    return true;
+  }
+  return typeof fetched.html_url === "string" && /#discussioncomment-/.test(fetched.html_url);
+}
+
+function isReviewComment(fetched) {
+  if (typeof fetched.pull_request_url !== "string") {
+    return false;
+  }
+  if (typeof fetched.path === "string" || typeof fetched.diff_hunk === "string" || positiveInt(fetched.pull_request_review_id)) {
+    return true;
+  }
+  return typeof fetched.html_url === "string" && /#discussion_r\d+/.test(fetched.html_url);
+}
+
+function isReview(fetched) {
+  if (typeof fetched.pull_request_url !== "string" || isReviewComment(fetched)) {
+    return false;
+  }
+  if (typeof fetched.submitted_at === "string") {
+    return true;
+  }
+  if (typeof fetched.html_url === "string" && /#pullrequestreview-\d+/.test(fetched.html_url)) {
+    return true;
+  }
+  return typeof fetched.state === "string" && /^(APPROVED|CHANGES_REQUESTED|COMMENTED|DISMISSED|PENDING)$/.test(fetched.state);
+}
+
+function isIssueComment(fetched) {
+  return (
+    typeof fetched.issue_url === "string" &&
+    typeof fetched.html_url === "string" &&
+    /#issuecomment-\d+/.test(fetched.html_url)
+  );
+}
+
+function isDiscussion(fetched) {
+  if (typeof fetched.html_url === "string" && /\/discussions\/\d+$/.test(fetched.html_url)) {
+    return true;
+  }
+  const repo = fetched.repository;
+  return Boolean(
+    repo &&
+      typeof repo.owner?.login === "string" &&
+      typeof repo.name === "string" &&
+      typeof fetched.title === "string" &&
+      positiveInt(fetched.number) &&
+      !fetched.pull_request &&
+      !fetched.issue_url,
+  );
+}
+
+function isPullRequest(fetched) {
+  if (hasPullRequestMarker(fetched)) {
+    return true;
+  }
+  if (fetched.head && typeof fetched.head === "object" && fetched.base && typeof fetched.base === "object" && typeof fetched.title === "string") {
+    return true;
+  }
+  if (typeof fetched.url === "string" && /\/pulls\/\d+(?:$|[?#])/.test(fetched.url) && typeof fetched.title === "string") {
+    return true;
+  }
+  return typeof fetched.html_url === "string" && /\/pull\/\d+$/.test(fetched.html_url) && typeof fetched.title === "string";
+}
+
+function isIssue(fetched) {
+  if (isPullRequest(fetched)) {
+    return false;
+  }
+  if (typeof fetched.html_url === "string" && /\/issues\/\d+$/.test(fetched.html_url) && typeof fetched.title === "string") {
+    return true;
+  }
+  return typeof fetched.url === "string" && /\/issues\/\d+(?:$|[?#])/.test(fetched.url) && typeof fetched.title === "string";
+}
+
+function deliveryOf(fetched) {
+  if (!fetched || typeof fetched !== "object") {
+    return null;
+  }
+  if (isDiscussionComment(fetched)) {
+    return { event: "discussion_comment", kind: "discussion" };
+  }
+  if (isReviewComment(fetched)) {
+    return { event: "pull_request_review_comment", kind: "pr" };
+  }
+  if (isReview(fetched)) {
+    return { event: "pull_request_review", kind: "pr" };
+  }
+  if (isIssueComment(fetched)) {
+    const kind = kindFromHtml(fetched.html_url);
+    if (kind !== "pr" && kind !== "issue") {
+      return null;
+    }
+    return { event: "issue_comment", kind };
+  }
+  if (isDiscussion(fetched)) {
+    return { event: "discussion", kind: "discussion" };
+  }
+  if (isPullRequest(fetched)) {
+    return { event: "pull_request", kind: "pr" };
+  }
+  if (isIssue(fetched)) {
+    return { event: "issues", kind: "issue" };
+  }
+  return null;
 }
 
 function revisionOf(node) {
@@ -261,27 +387,6 @@ function kindFromHtml(url) {
   return null;
 }
 
-function parentKind(eventName, fetched) {
-  if (eventName === "issue_comment") {
-    return kindFromHtml(fetched.html_url);
-  }
-  if (
-    eventName === "pull_request" ||
-    eventName === "pull_request_target" ||
-    eventName === "pull_request_review" ||
-    eventName === "pull_request_review_comment"
-  ) {
-    return "pr";
-  }
-  if (eventName === "discussion" || eventName === "discussion_comment") {
-    return "discussion";
-  }
-  if (eventName === "issues") {
-    return "issue";
-  }
-  return null;
-}
-
 function parentNumber(eventName, fetched) {
   if (eventName === "issue_comment") {
     return numberFromUrl(fetched.issue_url);
@@ -429,7 +534,8 @@ export function routeEvent(input) {
   if (!fetched || typeof fetched !== "object" || Array.isArray(fetched)) {
     return reject("missing_object", view.textSource);
   }
-  const linkedRepo = fetchedRepo(eventName, fetched);
+  const delivery = deliveryOf(fetched);
+  const linkedRepo = fetchedRepo(delivery ? delivery.event : eventName, fetched);
   if (linkedRepo && lower(linkedRepo) !== lower(fullName)) {
     return reject("wrong_repo");
   }
@@ -441,16 +547,18 @@ export function routeEvent(input) {
   if (!mentionsHandle(fetchedText, input.config.bot_handle)) {
     return reject("no_mention");
   }
-  const stamp = revisionOf(fetched);
-  const number = parentNumber(eventName, fetched);
-  const kind = parentKind(eventName, fetched);
-  const reply = stamp && number && kind ? replyFor(eventName, fetched, number) : null;
-  if (!stamp || !number || !kind || !reply) {
+  if (!delivery || canonicalWrap(eventName) !== delivery.event) {
     return reject("missing_object", view.textSource);
   }
-  const delivery = canonicalEvent(eventName);
+  const stamp = revisionOf(fetched);
+  const number = parentNumber(delivery.event, fetched);
+  const kind = delivery.kind;
+  const reply = stamp && number ? replyFor(delivery.event, fetched, number) : null;
+  if (!stamp || !number || !reply) {
+    return reject("missing_object", view.textSource);
+  }
   const ledger = {
-    event_name: delivery,
+    event_name: delivery.event,
     node_id: stamp.node_id,
     updated_at: stamp.updated_at,
   };
@@ -467,7 +575,7 @@ export function routeEvent(input) {
     text_source: view.textSource,
     reply_target: reply,
     ledger,
-    ledger_path: [delivery, pathSegment(stamp.node_id), pathSegment(stamp.updated_at)],
+    ledger_path: [delivery.event, pathSegment(stamp.node_id), pathSegment(stamp.updated_at)],
   };
 }
 

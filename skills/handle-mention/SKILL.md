@@ -58,7 +58,7 @@ When `accept` is false for any other reason, append one line to `state_dir/dropp
 - `api: rest` means `gh api` on `text_source.path`.
 - `api: graphql` means read that discussion, or that discussion comment, from GitHub.
 
-Pass the fetched JSON back as `fetched`. The second result is the decision. Use its `thread_key`, `agent_name`, `reply_target`, `ledger`, and `ledger_path`. Ignore `payload` numbers, node ids, timestamps, event aliases, and `issue.pull_request` after this point. A discussion object may use `id`, `updatedAt`, and `discussion.number`. Pass that object through. Do not copy those fields from the webhook. The fetched author and the fetched text are what the router checked.
+Pass the fetched JSON back as `fetched`. The second result is the decision. Use its `thread_key`, `agent_name`, `reply_target`, `ledger`, and `ledger_path`. Ignore the webhook event name, `payload` numbers, node ids, timestamps, and `issue.pull_request` after this point. The fetched object chooses the delivery and the thread. An issue object with `pull_request` is a pull request, so an `issues` wrap of that object is not another delivery. A discussion object may use `id`, `updatedAt`, and `discussion.number`. Pass that object through. Do not copy those fields from the webhook. The fetched author and the fetched text are what the router checked.
 
 `ledger_path` is three safe segments. Do not build a path from the raw node id.
 
