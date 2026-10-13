@@ -3,3 +3,4 @@
 !.cursor/skills/
 .cursor/skills/*
 !.cursor/skills/verify-mentions/
+.cursor/skills/verify-mentions/handles.local
