@@ -378,6 +378,111 @@ test("a GraphQL discussion is accepted without REST field names", () => {
   assert.equal(decision.reply_target.reply_to_id, null);
 });
 
+test("a pull request replayed as an issues event is not a second delivery", () => {
+  const config = {
+    trigger_user: "octo-user",
+    bot_handle: "helper-bot",
+    repos: ["octo-org/sandbox"],
+  };
+  const repository = { full_name: "octo-org/sandbox" };
+  const sender = { login: "octo-user" };
+  const revision = {
+    number: 7,
+    title: "Parser",
+    body: "@helper-bot please review",
+    node_id: "PR_7",
+    updated_at: "2026-10-12T02:00:00Z",
+    user: { login: "octo-user" },
+  };
+  const pull = {
+    ...revision,
+    html_url: "https://github.com/octo-org/sandbox/pull/7",
+    url: "https://api.github.com/repos/octo-org/sandbox/pulls/7",
+    issue_url: "https://api.github.com/repos/octo-org/sandbox/issues/7",
+    head: { ref: "parser", repo: { fork: false } },
+    base: { ref: "main" },
+  };
+  const asIssue = {
+    ...revision,
+    html_url: "https://github.com/octo-org/sandbox/pull/7",
+    url: "https://api.github.com/repos/octo-org/sandbox/issues/7",
+    pull_request: {
+      url: "https://api.github.com/repos/octo-org/sandbox/pulls/7",
+      html_url: "https://github.com/octo-org/sandbox/pull/7",
+    },
+  };
+  const honest = routeEvent({
+    event_name: "pull_request_target",
+    config,
+    payload: { repository, sender, pull_request: pull },
+    fetched: pull,
+  });
+  const issueWrap = routeEvent({
+    event_name: "issues",
+    config,
+    payload: { repository, sender, issue: asIssue },
+    fetched: asIssue,
+  });
+  const pullUnderIssues = routeEvent({
+    event_name: "issues",
+    config,
+    payload: { repository, sender, issue: pull },
+    fetched: pull,
+  });
+  const issueShapeUnderPull = routeEvent({
+    event_name: "pull_request_target",
+    config,
+    payload: { repository, sender, pull_request: asIssue },
+    fetched: asIssue,
+  });
+  assert.equal(honest.accept, true);
+  assert.equal(honest.ledger.event_name, "pull_request");
+  assert.equal(honest.thread_key, threadKey("octo-org", "sandbox", "pr", 7));
+  assert.equal(issueWrap.accept, false);
+  assert.equal(issueWrap.reason, "missing_object");
+  assert.equal(pullUnderIssues.accept, false);
+  assert.equal(pullUnderIssues.reason, "missing_object");
+  assert.equal(issueShapeUnderPull.accept, true);
+  assert.equal(issueShapeUnderPull.thread_key, honest.thread_key);
+  assert.equal(issueShapeUnderPull.agent_name, honest.agent_name);
+  assert.deepEqual(issueShapeUnderPull.ledger_path, honest.ledger_path);
+  assert.deepEqual(issueShapeUnderPull.reply_target, honest.reply_target);
+
+  const dir = mkdtempSync(join(tmpdir(), "mentions-pr-as-issue-"));
+  const claim = (label, decision) =>
+    threadOp({
+      op: "claim",
+      state_dir: join(dir, label),
+      work_root: join(dir, "work"),
+      thread_key: decision.thread_key,
+      owner: "octo-org",
+      repo: "sandbox",
+      ledger_path: decision.ledger_path,
+      request_text: "Request from octo-user",
+      agent_name: decision.agent_name,
+      reply_target: decision.reply_target,
+    });
+  const first = claim("concurrent", honest);
+  const second = claim("concurrent", issueShapeUnderPull);
+  assert.equal(first.action, "launch");
+  assert.equal(second.reason, "busy");
+  const committed = claim("committed", honest);
+  assert.equal(
+    threadOp({
+      op: "commit",
+      state_dir: join(dir, "committed"),
+      thread_key: honest.thread_key,
+      token: committed.token,
+      ledger_path: honest.ledger_path,
+      agent_name: honest.agent_name,
+      reply_target: honest.reply_target,
+    }).ok,
+    true,
+  );
+  assert.equal(claim("committed", issueShapeUnderPull).reason, "duplicate");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("stdin CLI prints one JSON decision", () => {
   const script = join(root, "../scripts/route-event.mjs");
   const input = load("issues.json");
