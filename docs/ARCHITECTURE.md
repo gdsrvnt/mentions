@@ -19,6 +19,6 @@ sequenceDiagram
   Agent->>GitHub: progress and final reply
 ```
 
-State is one file per thread at `state_dir/jobs/<thread_key>.json`, written by a temp file and `mv`. The seen ledger is one directory per `event_name`, `node_id`, and `updated_at`. Two threads do not share a file.
+`scripts/thread-state.mjs` claims one thread under a lock, writes the request to an immutable file, and records the seen entry only after dispatch succeeds. The thread key is a hash of owner, repo, kind, and number. The seen path hashes the node id and the revision. The work directory includes the owner and the repo.
 
 The installer is `scripts/install.sh`. It renders `templates/mention-forward.yml`, opens a pull request, and merges the repository into the handler config. The routine prompt it prints is `templates/routine-prompt.md`.

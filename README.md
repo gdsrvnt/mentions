@@ -25,7 +25,7 @@ sequenceDiagram
 
 A workflow in the target repository posts `{event_name, payload}` to the Grok Bot webhook routine. The routine runs `skills/handle-mention/SKILL.md`. That skill calls `scripts/route-event.mjs`, fetches the comment from GitHub, and starts one herdr agent for the thread. The agent writes the progress comments and the final reply. The dispatcher does not post those for it.
 
-`scripts/route-event.mjs` reads `{event_name, payload, config, seen}` and prints `{accept, reason, thread_key, agent_name, text_source, reply_target, ledger}`. `text_source` is the GitHub object to fetch. `reason` is `ok`, `wrong_repo`, `wrong_sender`, `no_mention`, `fork_review`, `duplicate`, `unsupported_event`, or another drop listed in the script. Logins and handles match without case. `@bot` does not match `@bot2`.
+`scripts/route-event.mjs` reads `{event_name, payload, config, seen, fetched}` and prints `{accept, reason, thread_key, agent_name, text_source, reply_target, ledger, ledger_path}`. The first call has no `fetched` object and returns `needs_fetch` plus `text_source`. The second call passes the GitHub API object. The ledger, the thread, and the reply target come from that object. `reason` is `ok`, `needs_fetch`, `wrong_repo`, `wrong_sender`, `no_mention`, `fork_review`, `duplicate`, `unsupported_event`, or another drop listed in the script. Logins and handles match without case. `@bot` does not match `@bot2`. Fork pull request bodies are forwarded. Fork reviews are not.
 
 `skills/setup-mentions/SKILL.md` is the installer entry point. It runs `scripts/install.sh`.
 
@@ -93,8 +93,8 @@ Installing the plugin does not install the workflow. The workflow install is `sc
 Preview, then install, from the plugin root:
 
 ```bash
-scripts/install.sh <owner/repo> --user <login> --bot <handle> --dry-run
-scripts/install.sh <owner/repo> --user <login> --bot <handle>
+scripts/install.sh <owner/repo> --user <login> --bot <handle> --commit-name "<name>" --commit-email "<email>" --dry-run
+scripts/install.sh <owner/repo> --user <login> --bot <handle> --commit-name "<name>" --commit-email "<email>"
 ```
 
 Flags:
@@ -105,6 +105,9 @@ Flags:
 - `--secret-prefix`
 - `--branch`
 - `--config`
+- `--commit-name`
+- `--commit-email`
+- `--comments-only`
 - `--update`
 - `--dry-run`
 
@@ -132,16 +135,20 @@ The handler reads `${MENTIONS_CONFIG:-~/.config/mentions/config.json}`. `scripts
 | `gh_token_env` | Name of the environment variable that holds the bot PAT. The value is not stored in the file. |
 | `state_dir` | Jobs, the seen ledger, context files, and `dropped.log`. |
 | `work_root` | Parent directory for per-repo workspaces. |
-| `commit_name` | `git user.name` for commits the agent creates. |
+| `commit_name` | `git user.name` for commits the agent creates. Empty, with an empty `commit_email`, means comments only. |
 | `commit_email` | `git user.email` for those commits. |
 
 ## Bot account
 
 Create a machine user, or reuse one that is not the trigger user.
 
-Create a fine-grained PAT limited to the repositories you install. Permissions are Issues read-write, Pull requests read-write, and Discussions read-write. Add Contents read-write only if the agent should commit. Do not use a classic PAT. A classic PAT makes a prompt injection account-wide.
+Use two fine-grained PATs. Do not use a classic PAT. A classic PAT makes a prompt injection account-wide.
 
-Store the token in the environment variable named by `gh_token_env`. Grok Bot keeps that variable in the routine environment. Set `commit_name` and `commit_email` to the machine user.
+The setup credential installs the workflow. Limit it to the repositories you select. It needs Contents write, Workflows write, and Secrets write so it can push `.github/workflows/mention-forward.yml`, open the pull request, and set the Actions secrets. `scripts/install.sh` checks that this credential can push before it creates the branch. The machine that runs the installer also needs its own `git user.name` and `git user.email`. Those values commit the workflow file. They are not the bot identity.
+
+The runtime credential is the token in `gh_token_env`. Limit it to the same repositories. Permissions are Issues read-write, Pull requests read-write, and Discussions read-write. Add Contents read-write only if the agent should commit. Do not grant Workflows write or Secrets write on this token.
+
+Store the runtime token in the environment variable named by `gh_token_env`. Grok Bot keeps that variable in the routine environment. Pass `--commit-name` and `--commit-email` to `scripts/install.sh` so the handler config can commit as the machine user. `--comments-only` leaves both empty, and the agent does not commit.
 
 Check the token with `GH_TOKEN` set in the environment and `gh api user --jq .login`. The printed login should be the machine user.
 

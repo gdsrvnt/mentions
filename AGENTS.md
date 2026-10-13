@@ -9,6 +9,7 @@ shellcheck scripts/install.sh scripts/test.sh
 actionlint
 bash scripts/test.sh
 node --test tests/route-event.test.mjs
+node --test tests/thread-state.test.mjs
 node scripts/validate-plugin.mjs
 ```
 
@@ -18,7 +19,7 @@ node scripts/validate-plugin.mjs
 
 `scripts/route-event.mjs` is the accept decision. The skill calls it. Do not re-implement sender, mention, or thread rules only in prose.
 
-`scripts/install.sh` does not change global git config, does not call `gh` on `--dry-run`, and deletes a remote branch only when that run pushed it and the pull request does not exist yet.
+`scripts/install.sh` does not change global git config, does not call `gh` on `--dry-run`, and deletes a remote branch only when that run pushed it and a follow-up query confirms the pull request does not exist. An inconclusive query keeps the branch.
 
 Comment text is never interpolated into a shell command. Posts use `-F body=@file`.
 

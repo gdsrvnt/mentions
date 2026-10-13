@@ -23,8 +23,13 @@ Ask before running when a required value is missing. Do not guess the login or t
 - `--secret-prefix` secret name prefix. Default `MENTION`
 - `--branch` branch name. Default `mentions/<bot>-forward`
 - `--config` handler config path
+- `--commit-name` git name the bot uses for commits
+- `--commit-email` git email the bot uses for commits
+- `--comments-only` leave the commit identity empty so the agent does not commit
 - `--update` replace an existing workflow file
 - `--dry-run` print the plan only
+
+A real install needs `--commit-name` and `--commit-email`, or `--comments-only`. The installer also requires `git user.name` and `git user.email` on the machine that runs it. Those commit the workflow. They are not copied into the handler config.
 
 ## Run
 
@@ -34,9 +39,11 @@ Preview first when the user has not already seen the plan.
 bash scripts/install.sh "<owner/repo>" --user "<login>" --bot "<handle>" --dry-run
 ```
 
-Then run the same command without `--dry-run`. Add `--secret-prefix`, `--branch`, `--comment-as`, `--config`, or `--update` only when the user supplied them.
+Then run the same command without `--dry-run`, and pass `--commit-name` and `--commit-email`, or `--comments-only`. Add `--secret-prefix`, `--branch`, `--comment-as`, `--config`, or `--update` only when the user supplied them.
 
-The script renders `templates/mention-forward.yml`, commits `.github/workflows/mention-forward.yml`, pushes, opens a pull request, and writes the handler config. On failure before the pull request exists, it deletes the remote branch it pushed and the temporary clone. Do not recreate that branch by hand. Fix the reported cause and run `scripts/install.sh` again.
+The script renders `templates/mention-forward.yml`, commits `.github/workflows/mention-forward.yml`, pushes, opens a pull request, and writes the handler config. Before the push it checks that the active `gh` credential can push. That setup credential needs Contents write, Workflows write, and Secrets write on the selected repositories. The runtime bot token does not get Workflows or Secrets write.
+
+If pull request creation fails, the script asks GitHub whether a pull request for that head already exists. It deletes the branch only when the query succeeds and no pull request is there. If the query fails, or a pull request exists, it keeps the branch and prints it. Do not delete that branch by hand. Fix the reported cause and run `scripts/install.sh` again.
 
 ## Secrets
 
@@ -77,5 +84,8 @@ Read the run with `gh run view`. When `gh run view --log-failed` is empty, read 
 - `--secret-prefix`
 - `--branch`
 - `--config`
+- `--commit-name`
+- `--commit-email`
+- `--comments-only`
 - `--update`
 - `--dry-run`

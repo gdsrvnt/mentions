@@ -10,7 +10,7 @@
 - Handler config at `~/.config/mentions/config.json`, with one job file per thread and a seen ledger.
 - `templates/routine-prompt.md` and a Grok Bot setup path in the README.
 - `scripts/install.sh --update` replaces an existing workflow. `--comment-as` and `--config` set the bot account and the config path.
-- Marketplace fields on the manifest, including a logo, repository, homepage, tags, and Grok Bot minimum version 0.49.0. Cursor IDE is set to `never`.
+- Marketplace fields on the manifest, including a logo, repository, homepage, tags, and Grok Bot minimum version 0.49.0. Cursor can install the plugin.
 - CI runs on pushes to `main` and on pull requests, on Ubuntu and macOS.
 - `SECURITY.md`, `docs/ARCHITECTURE.md`, and `AGENTS.md`.
 
@@ -31,7 +31,9 @@
 
 ### Security
 
-- The handler fetches the comment from GitHub and does not execute the webhook body.
+- The handler fetches the comment from GitHub and does not execute the webhook body. The ledger and the reply thread come from that fetched object.
+- A lost pull request response keeps the branch when GitHub already opened the pull request.
+- Reviews use `submitted_at` when GitHub does not send `updated_at`. Fork pull request bodies are forwarded. Fork reviews are not.
 - Context from other people is marked untrusted. Merges and pushes to the default branch need an explicit verb from the trigger user.
 - Comment text is passed in files, not inside shell quotes.
 
