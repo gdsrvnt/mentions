@@ -9,9 +9,12 @@ name: mention-forward
 # the workflow file and repository secrets come from the default branch. This job
 # never checks out repository code and never runs pull request contents.
 #
-# commit_comment cannot be supported reliably: GitHub Actions has no
-# commit_comment trigger, and the events above do not include commit comments.
-# The mention match is case-sensitive.
+# commit_comment is not an Actions trigger. actionlint rejects a workflow that
+# subscribes to it.
+#
+# Actions == and contains() are case-insensitive. The first shell step applies
+# a boundary so @bot does not match @bot2. Edits are delivered again. The handler
+# drops a repeat of the same node id and updated_at.
 
 on:
   issues:
@@ -21,13 +24,13 @@ on:
   pull_request_target:
     types: [opened, edited]
   pull_request_review:
-    types: [submitted]
+    types: [submitted, edited]
   pull_request_review_comment:
-    types: [created]
+    types: [created, edited]
   discussion:
     types: [created, edited]
   discussion_comment:
-    types: [created]
+    types: [created, edited]
 
 permissions:
   contents: read
@@ -52,10 +55,35 @@ jobs:
           WEBHOOK_KEY: ${{ secrets.__MENTIONS_SECRET_KEY__ }}
           WEBHOOK_HEADER: ${{ secrets.__MENTIONS_SECRET_HEADER__ }}
         run: |
+          # mentions-forward-script
           set -euo pipefail
+          text="$(jq -r '
+            def s: if . == null then "" else . end;
+            if (.comment.body != null) then .comment.body
+            elif (.review.body != null) then .review.body
+            elif (.issue != null) then ((.issue.title | s) + "\n" + (.issue.body | s))
+            elif (.pull_request != null) then ((.pull_request.title | s) + "\n" + (.pull_request.body | s))
+            elif (.discussion != null) then ((.discussion.title | s) + "\n" + (.discussion.body | s))
+            else ""
+            end
+          ' "$GITHUB_EVENT_PATH")"
+          handle="__MENTIONS_BOT_HANDLE__"
+          if ! printf '%s' "$text" | grep -Eiq "(^|[^[:alnum:]_-])@${handle}([^[:alnum:]_-]|$)"; then
+            echo "::notice::Mention boundary check failed for @${handle}"
+            exit 0
+          fi
+          work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
           if [ -z "${WEBHOOK_URL:-}" ] || [ -z "${WEBHOOK_HEADER:-}" ]; then
-            echo "::error::__MENTIONS_SECRET_URL__ and __MENTIONS_SECRET_HEADER__ must be set"
-            exit 1
+            case "$EVENT_NAME" in
+              pull_request_review|pull_request_review_comment)
+                echo "::notice::Fork reviews are not forwarded because Actions secrets are unavailable"
+                exit 0
+                ;;
+              *)
+                echo "::error::__MENTIONS_SECRET_URL__ and __MENTIONS_SECRET_HEADER__ must be set"
+                exit 1
+                ;;
+            esac
           fi
           # __MENTIONS_SECRET_HEADER__ may be the full header line ("Authorization: Bearer <key>"), as the routine panel shows it.
           case "$WEBHOOK_HEADER" in
@@ -68,8 +96,17 @@ jobs:
               auth_header="${WEBHOOK_HEADER}: ${WEBHOOK_KEY}" ;;
           esac
           jq -n --arg event_name "$EVENT_NAME" --slurpfile payload "$GITHUB_EVENT_PATH" \
-            '{event_name: $event_name, payload: $payload[0]}' > "${RUNNER_TEMP}/body.json"
-          curl --fail-with-body -sS -X POST "$WEBHOOK_URL" \
+            '{event_name: $event_name, payload: $payload[0]}' > "${work}/body.json"
+          http_code="$(curl -sS -o "${work}/webhook-response.txt" -w '%{http_code}' -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -H "$auth_header" \
-            --data-binary "@${RUNNER_TEMP}/body.json"
+            --data-binary "@${work}/body.json")"
+          case "$http_code" in
+            2[0-9][0-9]) ;;
+            *)
+              echo "::error::webhook returned HTTP ${http_code}"
+              exit 1
+              ;;
+          esac
+          echo "webhook HTTP ${http_code}"
+          # end mentions-forward-script

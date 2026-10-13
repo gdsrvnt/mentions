@@ -7,18 +7,25 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 plugin_root="$(cd "${script_dir}/.." && pwd)"
 template_path="${plugin_root}/templates/mention-forward.yml"
+routine_path="${plugin_root}/templates/routine-prompt.md"
 
 repo_arg=""
 trigger_user=""
 bot_handle=""
-secret_prefix="GROKBOT"
+comment_as=""
+secret_prefix="MENTION"
 branch_name=""
+config_path=""
 dry_run=0
+do_update=0
 seen_user=0
 seen_bot=0
 seen_prefix=0
 seen_branch=0
 seen_dry=0
+seen_update=0
+seen_comment_as=0
+seen_config=0
 target_kind=""
 secret_url=""
 secret_key=""
@@ -31,45 +38,64 @@ did_push=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: install.sh <owner/repo> --user <login> --bot <handle> [--secret-prefix PREFIX] [--branch BRANCH] [--dry-run]
+usage: install.sh <owner/repo> --user <login> --bot <handle> [--secret-prefix PREFIX] [--branch BRANCH] [--comment-as LOGIN] [--config PATH] [--update] [--dry-run]
 EOF
 }
 
 show_help() {
   cat <<'EOF'
-usage: install.sh <owner/repo> --user <login> --bot <handle> [--secret-prefix PREFIX] [--branch BRANCH] [--dry-run]
+usage: install.sh <owner/repo> --user <login> --bot <handle> [--secret-prefix PREFIX] [--branch BRANCH] [--comment-as LOGIN] [--config PATH] [--update] [--dry-run]
 
 Render the mention-forward workflow for a trigger user and bot, commit it on a
 new branch, push the branch, and open a pull request. Prints the Actions
-secrets to create and the webhook routine that should receive
-{"event_name","payload"}.
+secrets to create and the Grok Bot routine prompt.
 
 A local git path is accepted instead of owner/repo only with --dry-run. Dry-run
-renders and prints the workflow, pull request text, and secret routine without
-cloning, pushing, or opening a pull request.
+renders and prints the workflow, pull request text, secret routine, and handler
+config without cloning, pushing, opening a pull request, or writing the config.
+
+--user LOGIN
+    GitHub login that may trigger the workflow. Outside dry-run, the login is
+    replaced with the login GitHub returns for that account. Matching is
+    case-insensitive. The login must differ from --bot.
+
+--bot HANDLE
+    Mention handle, with or without a leading @. Matching ignores case. The
+    workflow still requires a mention boundary, so @bot does not match @bot2.
+
+--comment-as LOGIN
+    Account the handler comments and commits as. Default: the bot handle.
 
 --secret-prefix PREFIX
     Secret names become PREFIX_WEBHOOK_URL, PREFIX_WEBHOOK_KEY, and
-    PREFIX_WEBHOOK_HEADER. PREFIX matches [A-Z][A-Z0-9]{0,24}. Default: GROKBOT,
-    which selects GROKBOT_WEBHOOK_URL, GROKBOT_WEBHOOK_KEY, and
-    GROKBOT_WEBHOOK_HEADER.
+    PREFIX_WEBHOOK_HEADER. PREFIX matches [A-Z][A-Z0-9]{0,24}. Default: MENTION.
 
 --branch BRANCH
     Branch to create. Default: mentions/<bot>-forward.
 
---bot HANDLE
-    Mention handle, with or without a leading @. The match is case-sensitive.
+--config PATH
+    Handler config to write or merge. Default: $MENTIONS_CONFIG, or
+    ~/.config/mentions/config.json. Dry-run prints the document and does not
+    write it.
 
-On any failure after a push, the script deletes that remote branch and its
-temporary clone. Commits use the existing git user.name and user.email. This
-script does not embed tokens.
+--update
+    When the workflow file already exists on the default branch, open a pull
+    request that replaces it. Without this flag, an existing file is an error.
 
-commit_comment cannot be supported reliably because GitHub Actions has no
-commit_comment trigger.
+--dry-run
+    Print the plan only.
+
+On any failure after a push and before the pull request exists, the script
+deletes that remote branch and its temporary clone. Commits use the existing
+git user.name and user.email. This script does not embed tokens.
+
+commit_comment is not an Actions trigger. actionlint rejects a workflow that
+subscribes to it.
 
 Examples:
   install.sh owner/repo --user octocat --bot my-bot
   install.sh owner/repo --user octocat --bot my-bot --secret-prefix CUSTOM --dry-run
+  install.sh owner/repo --user octocat --bot my-bot --update
 EOF
 }
 
@@ -153,6 +179,10 @@ valid_branch() {
   [[ "$normalized" == "$value" ]]
 }
 
+fold_login() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 require_value() {
   local flag="$1"
   local value="${2-}"
@@ -189,6 +219,13 @@ parse_args() {
         bot_handle="$2"
         shift 2
         ;;
+      --comment-as)
+        [[ "$seen_comment_as" -eq 0 ]] || die "duplicate --comment-as"
+        seen_comment_as=1
+        require_value "--comment-as" "${2-}"
+        comment_as="$2"
+        shift 2
+        ;;
       --secret-prefix)
         [[ "$seen_prefix" -eq 0 ]] || die "duplicate --secret-prefix"
         seen_prefix=1
@@ -202,6 +239,19 @@ parse_args() {
         require_value "--branch" "${2-}"
         branch_name="$2"
         shift 2
+        ;;
+      --config)
+        [[ "$seen_config" -eq 0 ]] || die "duplicate --config"
+        seen_config=1
+        require_value "--config" "${2-}"
+        config_path="$2"
+        shift 2
+        ;;
+      --update)
+        [[ "$seen_update" -eq 0 ]] || die "duplicate --update"
+        seen_update=1
+        do_update=1
+        shift
         ;;
       --dry-run)
         [[ "$seen_dry" -eq 0 ]] || die "duplicate --dry-run"
@@ -242,10 +292,14 @@ validate_all() {
     die "git is required"
   fi
   [[ -f "$template_path" ]] || die "missing template: ${template_path}"
+  [[ -f "$routine_path" ]] || die "missing routine prompt: ${routine_path}"
   [[ "$seen_user" -eq 1 ]] || die "--user is required"
   [[ "$seen_bot" -eq 1 ]] || die "--bot is required"
   if [[ "$bot_handle" == @* ]]; then
     bot_handle="${bot_handle#@}"
+  fi
+  if [[ "$comment_as" == @* ]]; then
+    comment_as="${comment_as#@}"
   fi
   if ! valid_login "$trigger_user"; then
     die "invalid --user login: ${trigger_user}"
@@ -253,8 +307,17 @@ validate_all() {
   if ! valid_login "$bot_handle"; then
     die "invalid --bot handle: ${bot_handle}"
   fi
+  if [[ -z "$comment_as" ]]; then
+    comment_as="$bot_handle"
+  fi
+  if ! valid_login "$comment_as"; then
+    die "invalid --comment-as login: ${comment_as}"
+  fi
+  if [[ "$(fold_login "$trigger_user")" == "$(fold_login "$bot_handle")" ]]; then
+    die "--user and --bot must be different accounts"
+  fi
   if ! valid_prefix "$secret_prefix"; then
-    die "invalid --secret-prefix: ${secret_prefix} (use [A-Z][A-Z0-9]{0,24}, for example GROKBOT)"
+    die "invalid --secret-prefix: ${secret_prefix} (use [A-Z][A-Z0-9]{0,24}, for example MENTION)"
   fi
   secret_url="${secret_prefix}_WEBHOOK_URL"
   secret_key="${secret_prefix}_WEBHOOK_KEY"
@@ -264,6 +327,9 @@ validate_all() {
   fi
   if ! valid_branch "$branch_name"; then
     die "invalid --branch name: ${branch_name}"
+  fi
+  if [[ -z "$config_path" ]]; then
+    config_path="${MENTIONS_CONFIG:-${HOME}/.config/mentions/config.json}"
   fi
   classify_target
   if [[ "$dry_run" -eq 0 && "$target_kind" != "github" ]]; then
@@ -294,26 +360,60 @@ assert_rendered() {
   fi
 }
 
+print_config() {
+  local repo_json="[]"
+  if [[ "$target_kind" == "github" ]]; then
+    repo_json="[\"${repo_arg}\"]"
+  fi
+  cat <<EOF
+config_path: ${config_path}
+config:
+{
+  "trigger_user": "${trigger_user}",
+  "bot_handle": "${bot_handle}",
+  "repos": ${repo_json},
+  "comment_as": "${comment_as}",
+  "gh_token_env": "GH_TOKEN",
+  "state_dir": "${HOME}/.local/state/mentions",
+  "work_root": "${HOME}/.local/share/mentions/work",
+  "commit_name": "",
+  "commit_email": ""
+}
+EOF
+}
+
 instructions() {
   cat <<EOF
-Create these GitHub Actions secrets on ${repo_arg}:
+GitHub Actions secrets on ${repo_arg}:
 
-- ${secret_url}: HTTPS endpoint of the webhook routine
-- ${secret_key}: shared secret sent in the webhook header
-- ${secret_header}: header name that carries the key (for example, X-Webhook-Key)
+- ${secret_url} receives the routine webhook URL.
+- ${secret_header} receives the full Authorization line from the Grok Bot routine panel, including the Authorization prefix. This is the default.
+- ${secret_key} is only for the alternative where ${secret_header} is a bare header name. Leave ${secret_key} unset when ${secret_header} is the full line.
 
-Webhook routine:
+Grok Bot routine:
 
-1. Accept POST requests only.
-2. Compare the header named by the ${secret_header} secret with the value of ${secret_key}. Reject mismatches with HTTP 401.
-3. Parse a JSON object with two fields: event_name (string) and payload (the GitHub event object).
-4. Invoke the handle-mention skill with that object. The skill re-checks the sender, repository, and mention before it replies.
-5. Merge the workflow pull request onto the default branch. Issue, comment, and discussion events run this file only from the default branch.
+1. Install this plugin.
+2. Create a routine with a webhook trigger.
+3. Copy the webhook URL and the full Authorization line.
+4. Set the secrets. Inside Grok Bot, use a secret card. The bot reads WEBHOOK_URL, WEBHOOK_HEADER, and, only for a bare header name, WEBHOOK_KEY. Otherwise a person runs gh secret set.
+5. Paste the routine prompt below into the routine.
+6. After this pull request is merged, run the three-case smoke test. A mention from the trigger user is delivered. A mention from the bot is skipped. A trigger-user comment without the mention is skipped.
 
-The workflow covers issues, issue comments, pull requests, pull request reviews, pull request review comments, discussions, and discussion comments. Pull request opened and edited events use pull_request_target so secrets come from the default branch. The job does not check out repository code. commit_comment cannot be supported reliably because GitHub Actions has no commit_comment trigger.
+Set secrets without printing the values:
 
-Configure handle-mention with trigger user ${trigger_user}, bot handle ${bot_handle}, and repository ${repo_arg}.
+printf '%s' "\$WEBHOOK_URL" | gh secret set ${secret_url} -R ${repo_arg}
+printf '%s' "\$WEBHOOK_HEADER" | gh secret set ${secret_header} -R ${repo_arg}
+
+Merge the workflow pull request onto the default branch after the secrets exist. Issue, comment, and discussion events run this file only from the default branch.
+
+The workflow covers issues, issue comments, pull requests, pull request reviews, pull request review comments, discussions, and discussion comments. Text events include edits. Deletes are not forwarded. Pull request opened and edited events use pull_request_target so secrets come from the default branch. The job does not check out repository code. Fork pull request reviews and review comments have no secrets, so the job exits 0 with a notice instead of failing. commit_comment is not an Actions trigger. actionlint rejects a workflow that subscribes to it.
+
+Routine prompt:
+
 EOF
+  cat "$routine_path"
+  printf '\n%s\n' "Handler config:"
+  print_config
 }
 
 print_plan() {
@@ -326,6 +426,7 @@ mode: ${mode_label}
 repository: ${repo_arg}
 trigger_user: ${trigger_user}
 bot_handle: ${bot_handle}
+comment_as: ${comment_as}
 mention: @${bot_handle}
 secret_url: ${secret_url}
 secret_key: ${secret_key}
@@ -351,7 +452,7 @@ Adds \`.github/workflows/mention-forward.yml\` to forward GitHub mentions of \`@
 
 The workflow posts \`{"event_name","payload"}\` to the webhook. It does not check out repository code. Pull request opened and edited events use \`pull_request_target\` so secrets come from the default branch.
 
-\`commit_comment\` cannot be supported reliably because GitHub Actions has no \`commit_comment\` trigger.
+\`commit_comment\` is not an Actions trigger. actionlint rejects a workflow that subscribes to it.
 
 ## Secrets and webhook
 
@@ -397,13 +498,13 @@ detect_default_branch() {
   return 1
 }
 
-atomic_install_workflow() {
+write_workflow() {
   local dest_dir="$1"
   local dest tmp
   dest="${dest_dir}/mention-forward.yml"
   mkdir -p "$dest_dir"
-  if [[ -e "$dest" ]]; then
-    die "workflow already exists: .github/workflows/mention-forward.yml"
+  if [[ -e "$dest" && "$do_update" -eq 0 ]]; then
+    die "workflow already exists: .github/workflows/mention-forward.yml (re-run with --update)"
   fi
   tmp="$(mktemp "${dest_dir}/.mention-forward.yml.XXXXXXXX")"
   if ! render_workflow "$tmp"; then
@@ -417,6 +518,76 @@ atomic_install_workflow() {
   mv -f "$tmp" "$dest"
 }
 
+canonical_user() {
+  local resolved
+  if ! resolved="$(gh api "users/${trigger_user}" --jq .login)"; then
+    die "could not look up --user ${trigger_user}"
+  fi
+  if ! valid_login "$resolved"; then
+    die "GitHub returned an invalid login for --user"
+  fi
+  trigger_user="$resolved"
+  if [[ "$(fold_login "$trigger_user")" == "$(fold_login "$bot_handle")" ]]; then
+    die "--user and --bot must be different accounts"
+  fi
+}
+
+merge_config() {
+  local dir tmp
+  if [[ "$target_kind" != "github" ]]; then
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    die "jq is required to write ${config_path}"
+  fi
+  dir="$(dirname "$config_path")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "${dir}/.config.XXXXXXXX")"
+  if [[ -f "$config_path" ]]; then
+    if ! jq --arg repo "$repo_arg" \
+      --arg trigger_user "$trigger_user" \
+      --arg bot_handle "$bot_handle" \
+      --arg comment_as "$comment_as" \
+      '
+        .trigger_user = $trigger_user
+        | .bot_handle = $bot_handle
+        | .comment_as = $comment_as
+        | .gh_token_env = (.gh_token_env // "GH_TOKEN")
+        | .state_dir = (.state_dir // (env.HOME + "/.local/state/mentions"))
+        | .work_root = (.work_root // (env.HOME + "/.local/share/mentions/work"))
+        | .commit_name = (.commit_name // "")
+        | .commit_email = (.commit_email // "")
+        | .repos = ((.repos // []) + [$repo] | unique)
+      ' "$config_path" > "$tmp"; then
+      rm -f "$tmp"
+      die "could not merge ${config_path}"
+    fi
+  else
+    if ! jq -n \
+      --arg repo "$repo_arg" \
+      --arg trigger_user "$trigger_user" \
+      --arg bot_handle "$bot_handle" \
+      --arg comment_as "$comment_as" \
+      --arg state_dir "${HOME}/.local/state/mentions" \
+      --arg work_root "${HOME}/.local/share/mentions/work" \
+      '{
+        trigger_user: $trigger_user,
+        bot_handle: $bot_handle,
+        repos: [$repo],
+        comment_as: $comment_as,
+        gh_token_env: "GH_TOKEN",
+        state_dir: $state_dir,
+        work_root: $work_root,
+        commit_name: "",
+        commit_email: ""
+      }' > "$tmp"; then
+      rm -f "$tmp"
+      die "could not write ${config_path}"
+    fi
+  fi
+  mv -f "$tmp" "$config_path"
+}
+
 run_install() {
   local base_branch pr_url body_file pr_title
   export GIT_TERMINAL_PROMPT=0
@@ -427,6 +598,7 @@ run_install() {
   if ! gh auth status >/dev/null; then
     die "gh is not authenticated; run gh auth login before installing"
   fi
+  canonical_user
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/mentions-install.XXXXXXXX")"
   clone_dir="${tmp_root}/repo"
   printf 'temp-clone: %s\n' "$tmp_root" >&2
@@ -445,11 +617,11 @@ run_install() {
   if git -C "$clone_dir" ls-remote --exit-code --heads origin "$branch_name" >/dev/null 2>&1; then
     die "remote branch already exists: ${branch_name}"
   fi
-  if [[ -e "${clone_dir}/.github/workflows/mention-forward.yml" ]]; then
-    die "workflow already exists: .github/workflows/mention-forward.yml"
+  if [[ -e "${clone_dir}/.github/workflows/mention-forward.yml" && "$do_update" -eq 0 ]]; then
+    die "workflow already exists: .github/workflows/mention-forward.yml (re-run with --update)"
   fi
   git -C "$clone_dir" checkout -q -b "$branch_name"
-  atomic_install_workflow "${clone_dir}/.github/workflows"
+  write_workflow "${clone_dir}/.github/workflows"
   git -C "$clone_dir" add -- .github/workflows/mention-forward.yml
   git -C "$clone_dir" commit -q \
     -m "Add mention-forward workflow for @${bot_handle}" \
@@ -460,6 +632,10 @@ run_install() {
   write_pr_body "$body_file"
   pr_title="Forward @${bot_handle} mentions from ${trigger_user}"
   pr_url="$(gh pr create --repo "$repo_arg" --base "$base_branch" --head "$branch_name" --title "$pr_title" --body-file "$body_file")"
+  did_push=0
+  if ! merge_config; then
+    die "pull request is open but the handler config was not written: ${pr_url}"
+  fi
   print_plan
   printf 'base: %s\n' "$base_branch"
   printf 'pull_request: %s\n' "$pr_url"
