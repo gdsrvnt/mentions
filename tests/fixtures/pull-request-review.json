@@ -27,7 +27,7 @@
       "id": 9,
       "body": "@helper-bot the loop never exits",
       "node_id": "PRR_9",
-      "updated_at": "2026-10-12T03:00:00Z",
+      "submitted_at": "2026-10-12T03:00:00Z",
       "user": {
         "login": "octo-user"
       }

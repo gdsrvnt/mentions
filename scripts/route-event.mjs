@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Decide whether a GitHub webhook event is a mention this install should handle.
-// stdin: { event_name, payload, config, seen? }
-// stdout: { accept, reason, thread_key, agent_name, text_source, reply_target, ledger }
+// stdin: { event_name, payload, config, seen?, fetched? }
+// stdout: { accept, reason, thread_key, agent_name, text_source, reply_target, ledger, ledger_path }
+// A final accept requires fetched, the GitHub API object. Payload fields do not set the ledger or the thread.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -19,15 +20,16 @@ const HANDLED = new Set([
   "discussion_comment",
 ]);
 
-function reject(reason) {
+function reject(reason, textSource = null) {
   return {
     accept: false,
     reason,
     thread_key: null,
     agent_name: null,
-    text_source: null,
+    text_source: textSource,
     reply_target: null,
     ledger: null,
+    ledger_path: null,
   };
 }
 
@@ -49,14 +51,29 @@ function positiveInt(value) {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
-function threadKey(fullName, kind, number) {
-  return `${fullName}-${kind}-${number}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+function splitRepo(fullName) {
+  const slash = String(fullName).indexOf("/");
+  return { owner: fullName.slice(0, slash), repo: fullName.slice(slash + 1) };
 }
 
-function agentName(key, kind, number) {
-  const hash = createHash("sha256").update(key).digest("hex").slice(0, 8);
+function identityHash(owner, repo, kind, number) {
+  return createHash("sha256")
+    .update(JSON.stringify([lower(owner), lower(repo), kind, String(number)]))
+    .digest("hex");
+}
+
+function threadKey(owner, repo, kind, number) {
+  return identityHash(owner, repo, kind, number).slice(0, 16);
+}
+
+function agentName(owner, repo, kind, number) {
+  const hash = identityHash(owner, repo, kind, number).slice(0, 8);
   const name = `${hash}-${kind}-${number}`;
   return name.length <= 32 ? name : hash;
+}
+
+function pathSegment(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
 }
 
 function rest(fullName, path) {
@@ -64,29 +81,54 @@ function rest(fullName, path) {
 }
 
 function graphql(fullName, number, what, nodeId) {
-  const slash = fullName.indexOf("/");
+  const { owner, repo } = splitRepo(fullName);
   return {
     api: "graphql",
-    owner: fullName.slice(0, slash),
-    name: fullName.slice(slash + 1),
+    owner,
+    name: repo,
     number,
     what,
     node_id: nodeId ?? null,
   };
 }
 
-function stamp(node) {
-  if (!node || typeof node !== "object") {
+function revisionOf(node) {
+  if (!node || typeof node !== "object" || typeof node.node_id !== "string" || node.node_id.length === 0) {
     return null;
   }
-  if (typeof node.node_id !== "string" || typeof node.updated_at !== "string") {
-    return null;
+  if (typeof node.updated_at === "string" && node.updated_at.length > 0) {
+    return { node_id: node.node_id, updated_at: node.updated_at };
   }
-  return { node_id: node.node_id, updated_at: node.updated_at };
+  if (typeof node.submitted_at === "string" && node.submitted_at.length > 0) {
+    const body = typeof node.body === "string" ? node.body : "";
+    const digest = createHash("sha256").update(body).digest("hex").slice(0, 16);
+    return { node_id: node.node_id, updated_at: `${node.submitted_at}#${digest}` };
+  }
+  return null;
 }
 
 function isForkPullRequest(payload) {
   return payload?.pull_request?.head?.repo?.fork === true;
+}
+
+function numberFromUrl(url) {
+  if (typeof url !== "string") {
+    return null;
+  }
+  const match = url.match(/\/(?:issues|pulls)\/(\d+)(?:$|[?#])/);
+  if (!match) {
+    return null;
+  }
+  const number = Number(match[1]);
+  return positiveInt(number) ? number : null;
+}
+
+function repoFromUrl(url) {
+  if (typeof url !== "string") {
+    return null;
+  }
+  const match = url.match(/\/repos\/([^/]+)\/([^/]+)\//);
+  return match ? `${match[1]}/${match[2]}` : null;
 }
 
 function viewFor(eventName, payload) {
@@ -97,9 +139,7 @@ function viewFor(eventName, payload) {
       text: textOf(issue?.title, issue?.body),
       kind: "issue",
       number: issue?.number,
-      stamp: stamp(issue),
       textSource: positiveInt(issue?.number) ? rest(fullName, `/issues/${issue.number}`) : null,
-      reply: positiveInt(issue?.number) ? { kind: "issue-comment", number: issue.number } : null,
       fork: false,
     };
   }
@@ -111,9 +151,7 @@ function viewFor(eventName, payload) {
       text: textOf(comment?.body),
       kind,
       number: issue?.number,
-      stamp: stamp(comment),
       textSource: positiveInt(comment?.id) ? rest(fullName, `/issues/comments/${comment.id}`) : null,
-      reply: positiveInt(issue?.number) ? { kind: "issue-comment", number: issue.number } : null,
       fork: false,
     };
   }
@@ -123,10 +161,8 @@ function viewFor(eventName, payload) {
       text: textOf(pull?.title, pull?.body),
       kind: "pr",
       number: pull?.number,
-      stamp: stamp(pull),
       textSource: positiveInt(pull?.number) ? rest(fullName, `/pulls/${pull.number}`) : null,
-      reply: positiveInt(pull?.number) ? { kind: "issue-comment", number: pull.number } : null,
-      fork: isForkPullRequest(payload),
+      fork: false,
     };
   }
   if (eventName === "pull_request_review") {
@@ -136,12 +172,10 @@ function viewFor(eventName, payload) {
       text: textOf(review?.body),
       kind: "pr",
       number: pull?.number,
-      stamp: stamp(review),
       textSource:
         positiveInt(pull?.number) && positiveInt(review?.id)
           ? rest(fullName, `/pulls/${pull.number}/reviews/${review.id}`)
           : null,
-      reply: positiveInt(pull?.number) ? { kind: "issue-comment", number: pull.number } : null,
       fork: isForkPullRequest(payload),
     };
   }
@@ -152,12 +186,7 @@ function viewFor(eventName, payload) {
       text: textOf(comment?.body),
       kind: "pr",
       number: pull?.number,
-      stamp: stamp(comment),
       textSource: positiveInt(comment?.id) ? rest(fullName, `/pulls/comments/${comment.id}`) : null,
-      reply:
-        positiveInt(pull?.number) && positiveInt(comment?.id)
-          ? { kind: "review-comment-reply", number: pull.number, comment_id: comment.id }
-          : null,
       fork: isForkPullRequest(payload),
     };
   }
@@ -167,12 +196,8 @@ function viewFor(eventName, payload) {
       text: textOf(discussion?.title, discussion?.body),
       kind: "discussion",
       number: discussion?.number,
-      stamp: stamp(discussion),
       textSource: positiveInt(discussion?.number)
         ? graphql(fullName, discussion.number, "discussion", discussion.node_id ?? null)
-        : null,
-      reply: discussion?.node_id
-        ? { kind: "discussion-comment", discussion_id: discussion.node_id, reply_to_id: null }
         : null,
       fork: false,
     };
@@ -184,19 +209,64 @@ function viewFor(eventName, payload) {
       text: textOf(comment?.body),
       kind: "discussion",
       number: discussion?.number,
-      stamp: stamp(comment),
       textSource: positiveInt(discussion?.number)
         ? graphql(fullName, discussion.number, "discussion_comment", comment?.node_id ?? null)
         : null,
-      reply: discussion?.node_id
-        ? {
-            kind: "discussion-comment",
-            discussion_id: discussion.node_id,
-            reply_to_id: comment?.parent_node_id || comment?.node_id || null,
-          }
-        : null,
       fork: false,
     };
+  }
+  return null;
+}
+
+function parentNumber(eventName, fetched) {
+  if (eventName === "issue_comment") {
+    return numberFromUrl(fetched.issue_url);
+  }
+  if (eventName === "pull_request_review" || eventName === "pull_request_review_comment") {
+    return numberFromUrl(fetched.pull_request_url);
+  }
+  return positiveInt(fetched.number) ? fetched.number : null;
+}
+
+function parentUrl(eventName, fetched) {
+  if (eventName === "issue_comment") {
+    return fetched.issue_url;
+  }
+  if (eventName === "pull_request_review" || eventName === "pull_request_review_comment") {
+    return fetched.pull_request_url;
+  }
+  return null;
+}
+
+function replyFor(eventName, fetched, number) {
+  if (eventName === "pull_request_review_comment") {
+    if (!positiveInt(fetched.id)) {
+      return null;
+    }
+    return { kind: "review-comment-reply", number, comment_id: fetched.id };
+  }
+  if (eventName === "discussion") {
+    if (typeof fetched.node_id !== "string") {
+      return null;
+    }
+    return { kind: "discussion-comment", discussion_id: fetched.node_id, reply_to_id: null };
+  }
+  if (eventName === "discussion_comment") {
+    const discussionId = fetched.discussion_node_id || fetched.discussion?.node_id;
+    if (typeof discussionId !== "string" || typeof fetched.node_id !== "string") {
+      return null;
+    }
+    return { kind: "discussion-comment", discussion_id: discussionId, reply_to_id: fetched.node_id };
+  }
+  return { kind: "issue-comment", number };
+}
+
+function authorOf(fetched) {
+  if (typeof fetched.user?.login === "string") {
+    return fetched.user.login;
+  }
+  if (typeof fetched.author?.login === "string") {
+    return fetched.author.login;
   }
   return null;
 }
@@ -274,26 +344,53 @@ export function routeEvent(input) {
   if (!mentionsHandle(view.text, input.config.bot_handle)) {
     return reject("no_mention");
   }
-  if (!positiveInt(view.number) || !view.textSource || !view.reply || !view.stamp) {
+  if (!positiveInt(view.number) || !view.textSource) {
     return reject("missing_object");
+  }
+  if (!input.fetched) {
+    return reject("needs_fetch", view.textSource);
+  }
+  const fetched = input.fetched;
+  if (!fetched || typeof fetched !== "object" || Array.isArray(fetched)) {
+    return reject("missing_object", view.textSource);
+  }
+  const linkedRepo = repoFromUrl(parentUrl(eventName, fetched));
+  if (linkedRepo && lower(linkedRepo) !== lower(fullName)) {
+    return reject("wrong_repo");
+  }
+  const author = authorOf(fetched);
+  if (typeof author !== "string" || lower(author) !== lower(input.config.trigger_user)) {
+    return reject("wrong_sender");
+  }
+  const fetchedText = textOf(fetched.title, fetched.body);
+  if (!mentionsHandle(fetchedText, input.config.bot_handle)) {
+    return reject("no_mention");
+  }
+  const stamp = revisionOf(fetched);
+  const number = parentNumber(eventName, fetched);
+  const reply = stamp && number ? replyFor(eventName, fetched, number) : null;
+  if (!stamp || !number || !reply) {
+    return reject("missing_object", view.textSource);
   }
   const ledger = {
     event_name: eventName,
-    node_id: view.stamp.node_id,
-    updated_at: view.stamp.updated_at,
+    node_id: stamp.node_id,
+    updated_at: stamp.updated_at,
   };
-  if (duplicate(input.seen, eventName, view.stamp)) {
+  if (duplicate(input.seen, eventName, stamp)) {
     return reject("duplicate");
   }
-  const key = threadKey(fullName, view.kind, view.number);
+  const { owner, repo } = splitRepo(fullName);
+  const key = threadKey(owner, repo, view.kind, number);
   return {
     accept: true,
     reason: "ok",
     thread_key: key,
-    agent_name: agentName(key, view.kind, view.number),
+    agent_name: agentName(owner, repo, view.kind, number),
     text_source: view.textSource,
-    reply_target: view.reply,
+    reply_target: reply,
     ledger,
+    ledger_path: [eventName, pathSegment(stamp.node_id), pathSegment(stamp.updated_at)],
   };
 }
 
