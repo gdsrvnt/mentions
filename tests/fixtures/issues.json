@@ -1,0 +1,28 @@
+{
+  "event_name": "issues",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "octo-user"
+    },
+    "issue": {
+      "number": 12,
+      "title": "Ship the parser",
+      "body": "Please @helper-bot look at the crash",
+      "node_id": "I_12",
+      "updated_at": "2026-10-12T00:00:00Z",
+      "user": {
+        "login": "octo-user"
+      }
+    }
+  }
+}

@@ -1,101 +1,202 @@
 # mentions
 
-Forward GitHub @mentions of a bot to a webhook, then handle each mention as a tracked reply job. A chosen user mentions the bot; GitHub Actions posts `{event_name, payload}` to your webhook; the handler acknowledges, posts milestone progress, and replies with the result it verified.
+[![CI status for the example repository](https://github.com/gdsrvnt/mentions/actions/workflows/ci.yml/badge.svg)](https://github.com/gdsrvnt/mentions/actions/workflows/ci.yml)
 
-This repository is a single Cursor plugin. Its manifest is `.cursor-plugin/plugin.json`.
+`mentions` forwards a GitHub @mention of your bot to a Grok Bot routine, then an agent replies on that same thread. You choose the person whose mentions count and the handle they write. The plugin installs into any repository you can push.
 
-## Install the plugin
+## How it works
 
-Copy or symlink this directory to `~/.cursor/plugins/local/mentions`, then start a new Cursor session so the skills load.
+```mermaid
+sequenceDiagram
+  participant User
+  participant Actions as GitHub Actions
+  participant Routine as Grok Bot routine
+  participant Handler as handle-mention
+  participant Agent as herdr agent
+  participant GitHub
+  User->>GitHub: mention the bot
+  GitHub->>Actions: event
+  Actions->>Routine: POST event_name and payload
+  Routine->>Handler: run the skill
+  Handler->>GitHub: fetch the comment
+  Handler->>Agent: launch or steer
+  Agent->>GitHub: progress and final reply
+```
+
+A workflow in the target repository posts `{event_name, payload}` to the Grok Bot webhook routine. The routine runs `skills/handle-mention/SKILL.md`. That skill calls `scripts/route-event.mjs`, fetches the comment from GitHub, and starts one herdr agent for the thread. The agent writes the progress comments and the final reply. The dispatcher does not post those for it.
+
+`scripts/route-event.mjs` reads `{event_name, payload, config, seen, fetched}` and prints `{accept, reason, thread_key, agent_name, text_source, reply_target, ledger, ledger_path}`. The first call has no `fetched` object and returns `needs_fetch` plus `text_source`. The second call passes the GitHub API object. The ledger, the thread, and the reply target come from that object. `reason` is `ok`, `needs_fetch`, `wrong_repo`, `wrong_sender`, `no_mention`, `fork_review`, `duplicate`, `unsupported_event`, or another drop listed in the script. Logins and handles match without case. `@bot` does not match `@bot2`. Fork pull request bodies are forwarded. Fork reviews are not.
+
+`skills/setup-mentions/SKILL.md` is the installer entry point. It runs `scripts/install.sh`.
+
+## Requirements
+
+| Tool | Version | Why |
+| --- | --- | --- |
+| Grok Bot | 0.49.0 | Webhook routines and secret cards. Cursor and Grok Bot can install the plugin; the webhook routine runs in Grok Bot. |
+| herdr | 0.9.3 | Launches the reply agent. Install from `https://herdr.dev` and put `herdr` on `PATH`. |
+| git | any current | Clones the target repository during install. |
+| gh | any current | Opens the workflow pull request and calls the GitHub API. |
+| jq | any current | The workflow builds the POST body. The installer merges config. |
+| curl | any current | The workflow posts the event. |
+| node | 22 | Runs `scripts/route-event.mjs` and `scripts/validate-plugin.mjs`. |
+| shellcheck | any current | Development. `scripts/test.sh` does not require it. CI runs it. |
+| actionlint | 1.7.12 | Development. `scripts/test.sh` runs it on the rendered workflow. |
+
+The bot account is a separate GitHub user. See Bot account below.
+
+## Install
+
+The listing is for Grok Bot. Local checkout is for development on a machine that has a `~/.cursor/plugins/local` directory.
+
+### Marketplace
+
+Install **GitHub Mentions** from the Cursor marketplace in Grok Bot. The plugin id is `mentions`.
+
+You're done when a new Grok Bot session lists the `setup-mentions` and `handle-mention` skills.
+
+### Local checkout
+
+From a clone of this repository:
 
 ```bash
-ln -s "$(pwd)" ~/.cursor/plugins/local/mentions
+mkdir -p "${HOME}/.cursor/plugins/local"
+ln -s "${PWD}" "${HOME}/.cursor/plugins/local/mentions"
 ```
 
-## Components
+You're done when a new session lists both skills.
 
-| Path | Role |
-| --- | --- |
-| `skills/setup-mentions/SKILL.md` | Setup entry point. Runs `scripts/install.sh`. |
-| `skills/handle-mention/SKILL.md` | Handles a forwarded event or a heartbeat. Acks, posts progress, replies, steers the same thread, and runs other threads in parallel. |
-| `templates/mention-forward.yml` | Workflow template parameterized by trigger user, bot handle, and secret names. |
-| `scripts/install.sh` | Renders the workflow, pushes a branch, opens a pull request, prints the secret and webhook routine, and rolls back on failure. |
-| `scripts/test.sh` | Dry-run checks against a local bare repo, plus actionlint on the rendered workflow. |
-| `scripts/validate-plugin.mjs` | Manifest and skill-frontmatter validation for this single-plugin repo. |
-| `.github/workflows/ci.yml` | Pull-request CI: shellcheck, actionlint, tests, and manifest validation. |
-
-## Set up a repository
-
-Use the `setup-mentions` skill, or from the plugin root:
+### Clone
 
 ```bash
-scripts/install.sh <owner/repo> --user <login> --bot <handle>
-scripts/install.sh <owner/repo> --user <login> --bot <handle> --secret-prefix CUSTOM --branch mentions/setup --dry-run
+mkdir -p "${HOME}/src" "${HOME}/.cursor/plugins/local"
+git clone https://github.com/gdsrvnt/mentions.git "${HOME}/src/mentions" # example
+ln -s "${HOME}/src/mentions" "${HOME}/.cursor/plugins/local/mentions"
 ```
 
-`--dry-run` prints the rendered workflow, pull request body, and secret routine without cloning, pushing, or opening a pull request. A local git path is accepted only with `--dry-run`.
+You're done when `~/.cursor/plugins/local/mentions/.cursor-plugin/plugin.json` exists.
 
-The real install clones the repository, commits `.github/workflows/mention-forward.yml` on a new branch (default `mentions/<bot>-forward`), pushes, and opens a pull request. Commits use the current `git user.name` and `user.email`. On failure, a trap deletes the remote branch if this run pushed it and removes the temporary clone.
+### Command line
 
-You need `git` credentials that can push, and an authenticated `gh` CLI (`gh auth login`) to open the pull request.
+Installing the plugin does not install the workflow. The workflow install is `scripts/install.sh`, documented in Grok Bot setup. You're done with that step when a dry-run prints `dry-run: no network writes`.
 
-## Secrets and webhook
+## Grok Bot setup
 
-`--secret-prefix` defaults to `GROKBOT`, which selects these Actions secrets:
+1. Install the plugin.
+2. Create a routine with a webhook trigger.
+3. Copy the webhook URL and the full Authorization line from the routine panel.
+4. Set the Actions secrets. Inside Grok Bot the bot reads `WEBHOOK_URL`, `WEBHOOK_HEADER`, and, only when the header is a bare name, `WEBHOOK_KEY`. It sets them with a secret card. Otherwise run `gh secret set`.
+5. Paste `templates/routine-prompt.md` into the routine.
+6. Merge the workflow pull request.
+7. Run the smoke test. The trigger user mentions the bot and the run is delivered. The bot mentioning itself is skipped. A trigger-user comment without the mention is skipped.
 
-| Secret | Purpose |
-| --- | --- |
-| `GROKBOT_WEBHOOK_URL` | HTTPS endpoint of the webhook routine |
-| `GROKBOT_WEBHOOK_KEY` | Shared secret sent in the header |
-| `GROKBOT_WEBHOOK_HEADER` | Header name that carries the key |
+Preview, then install, from the plugin root:
 
-A prefix `CUSTOM` selects `CUSTOM_WEBHOOK_URL`, `CUSTOM_WEBHOOK_KEY`, and `CUSTOM_WEBHOOK_HEADER`.
-
-The webhook routine accepts `POST` JSON:
-
-```json
-{"event_name": "issues", "payload": {}}
+```bash
+scripts/install.sh <owner/repo> --user <login> --bot <handle> --commit-name "<name>" --commit-email "<email>" --dry-run
+scripts/install.sh <owner/repo> --user <login> --bot <handle> --commit-name "<name>" --commit-email "<email>"
 ```
 
-It checks the configured header, then invokes `handle-mention` with that object. Merge the workflow pull request to the default branch before expecting issue, comment, or discussion events to run.
+Flags:
 
-## What the workflow covers
+- `--user`
+- `--bot`
+- `--comment-as`
+- `--secret-prefix`
+- `--branch`
+- `--config`
+- `--commit-name`
+- `--commit-email`
+- `--comments-only`
+- `--update`
+- `--dry-run`
 
-The workflow name is `mention-forward`. The `forward` job runs only when `github.actor` is the trigger user and the event text contains a case-sensitive `@bot` mention. Otherwise the job is skipped.
+`--secret-prefix` defaults to `MENTION`, which selects `MENTION_WEBHOOK_URL`, `MENTION_WEBHOOK_KEY`, and `MENTION_WEBHOOK_HEADER`. `MENTION_WEBHOOK_HEADER` should be the full Authorization line. `MENTION_WEBHOOK_KEY` is optional in that case. `--update` opens a pull request that replaces an existing workflow file. `--dry-run` does not call `gh`.
 
-| Surface | Actions trigger |
+Outside dry-run, `--user` is replaced with the login GitHub returns. `--user` and `--bot` must be different accounts, compared without case.
+
+Set secrets without printing them:
+
+```bash
+printf '%s' "$WEBHOOK_URL" | gh secret set MENTION_WEBHOOK_URL -R <owner/repo>
+printf '%s' "$WEBHOOK_HEADER" | gh secret set MENTION_WEBHOOK_HEADER -R <owner/repo>
+```
+
+## Configuration
+
+The handler reads `${MENTIONS_CONFIG:-~/.config/mentions/config.json}`. `scripts/install.sh` merges the current repository into `repos` on a real install and prints the document on a dry-run. The same keys are in [examples/config.yml](examples/config.yml).
+
+| Key | Meaning |
 | --- | --- |
-| Issues opened or edited | `issues` |
-| Issue and pull request conversation comments | `issue_comment` |
-| Pull requests opened or edited | `pull_request_target` |
-| Pull request reviews | `pull_request_review` |
-| Inline review comments | `pull_request_review_comment` |
-| Discussions | `discussion` |
-| Discussion comments | `discussion_comment` |
+| `trigger_user` | Login whose mentions are delivered. Compared without case. |
+| `bot_handle` | Handle they mention, without `@`. |
+| `repos` | Repositories to accept. Empty means every repository in the payload. |
+| `comment_as` | Login the agent comments and commits as. |
+| `gh_token_env` | Name of the environment variable that holds the bot PAT. The value is not stored in the file. |
+| `state_dir` | Jobs, the seen ledger, context files, and `dropped.log`. |
+| `work_root` | Parent directory for per-repo workspaces. |
+| `commit_name` | `git user.name` for commits the agent creates. Empty, with an empty `commit_email`, means comments only. |
+| `commit_email` | `git user.email` for those commits. |
 
-Pull request opened and edited events use `pull_request_target` so the workflow file and secrets come from the default branch. The job's only step posts the event JSON. It does not check out code and does not run pull request contents. Fork reviews and review comments still use their own event types; GitHub does not provide secrets to those fork events.
+## Bot account
 
-`commit_comment` cannot be supported reliably. GitHub Actions has no `commit_comment` trigger, and the events above do not include commit comments.
+Create a machine user, or reuse one that is not the trigger user.
 
-## Handler
+Use two fine-grained PATs. Do not use a classic PAT. A classic PAT makes a prompt injection account-wide.
 
-`handle-mention` re-checks the repository, sender, and mention, then drops the event silently when they do not match. It acknowledges on the GitHub surface, launches one herdr agent per thread, steers that agent when the same thread is mentioned again, and lets other threads run in parallel. Heartbeat wakes post new milestone lines and a final reply that contains only effects the handler verified.
+The setup credential installs the workflow. Limit it to the repositories you select. It needs Contents write, Pull requests write, Workflows write, and Secrets write so it can push `.github/workflows/mention-forward.yml`, open the pull request, and set the Actions secrets. `scripts/install.sh` checks that this credential can push before it creates the branch. That check does not prove the fine-grained scopes. The machine that runs the installer also needs its own `git user.name` and `git user.email`. Those values commit the workflow file. They are not the bot identity.
 
-The handler needs the `herdr` harness and a webhook routine. It comments and commits as the configured bot identity, not as the trigger user.
+The runtime credential is the token in `gh_token_env`. Limit it to the same repositories. Permissions are Issues read-write, Pull requests read-write, and Discussions read-write. Add Contents read-write only if the agent should commit. Do not grant Workflows write or Secrets write on this token.
+
+Store the runtime token in the environment variable named by `gh_token_env`. Grok Bot keeps that variable in the routine environment. Pass `--commit-name` and `--commit-email` to `scripts/install.sh` so the handler config can commit as the machine user. `--comments-only` leaves both empty, and the agent does not commit.
+
+Check the token with `GH_TOKEN` set in the environment and `gh api user --jq .login`. The printed login should be the machine user.
+
+## Security
+
+The webhook authenticates with one static header. Anyone who can push a workflow to an installed repository can read that secret. The handler therefore ignores instruction text in the webhook body and fetches the comment from GitHub.
+
+Text from other people is written under an `UNTRUSTED` header and is data, not instructions. Only the trigger user's fetched text is the request. The agent will not merge or push to the default branch unless that text contains an explicit verb such as `merge` or `push to main`.
+
+The full event payload is sent to the webhook, including content from private repositories. The routine host sees that payload.
+
+Fork pull request reviews are not forwarded. Actions does not provide secrets for those events, and the job exits 0 with a notice.
+
+`commit_comment` is not an Actions trigger. actionlint rejects a workflow that subscribes to it.
+
+Details and a reporting address are in [SECURITY.md](SECURITY.md). The flow is drawn again in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Troubleshooting
+
+A 401 that says the API key is invalid means the header secret was split into a name and a key. Put the full Authorization line in `MENTION_WEBHOOK_HEADER`.
+
+`gh run view --log-failed` can be empty. Read the job log with `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs`.
+
+A skipped job means the actor was not the trigger user, or the text did not contain the handle. Actions `==` and `contains()` ignore case. The shell step then requires a mention boundary.
+
+Fork reviews exit 0 with a notice. They are not delivered.
+
+A silent drop is a handler decision. The reason is appended to `state_dir/dropped.log`.
+
+## Uninstall
+
+Delete `.github/workflows/mention-forward.yml` from the default branch. Delete the three Actions secrets. Delete the Grok Bot routine. Remove the repository from `repos` in the handler config, and delete the config file when it is the last repository.
 
 ## Development
+
+Contributors start with [AGENTS.md](AGENTS.md).
 
 ```bash
 shellcheck scripts/install.sh scripts/test.sh
 actionlint
 bash scripts/test.sh
+node --test tests/route-event.test.mjs
+node --test tests/thread-state.test.mjs
 node scripts/validate-plugin.mjs
 ```
 
-`validate-plugins.mjs` in a cursor-plugins checkout cannot validate this plugin. That script hard-codes its own repository root, requires that checkout's `.cursor-plugin/marketplace.json`, and imports `ajv`. Use `scripts/validate-plugin.mjs` instead. CI runs that local validator.
-
-CI runs those checks on `pull_request` only.
+`actionlint` 1.7.12 is required by `scripts/test.sh`. The manifest check uses the vendored schema in `docs/schemas/plugin.schema.json`.
 
 ## License
 
-MIT. Copyright (c) 2026 ArchAgents.
+Copyright (c) 2026 gdsrvnt. MIT License. See [LICENSE](LICENSE).

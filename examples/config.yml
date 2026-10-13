@@ -1,0 +1,14 @@
+# Handler config. The installer writes the same fields as JSON.
+# Default path: ~/.config/mentions/config.json
+# Override with MENTIONS_CONFIG or install.sh --config.
+
+trigger_user: octo-user
+bot_handle: helper-bot
+repos:
+  - octo-org/sandbox
+comment_as: helper-bot
+gh_token_env: GH_TOKEN
+state_dir: ~/.local/state/mentions
+work_root: ~/.local/share/mentions/work
+commit_name: helper-bot
+commit_email: helper-bot@example.com

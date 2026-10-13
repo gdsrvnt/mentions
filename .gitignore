@@ -1,1 +1,6 @@
-.src/
+# Local Cursor tooling stays untracked; only the verification skill ships.
+.cursor/*
+!.cursor/skills/
+.cursor/skills/*
+!.cursor/skills/verify-mentions/
+.cursor/skills/verify-mentions/handles.local

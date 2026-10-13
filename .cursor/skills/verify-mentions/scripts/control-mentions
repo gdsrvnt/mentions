@@ -1,0 +1,456 @@
+#!/usr/bin/env bash
+# control-mentions: launch, doctor, drive, and clean up an isolated verification
+# run of the mentions plugin. Every drive gets a sandbox HOME, no GitHub token,
+# recording fakes for gh/herdr, git limited to file:// transports, and no network
+# when `unshare -rn` works. Evidence survives cleanup; scratch does not.
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+skill_dir="$(cd "${self_dir}/.." && pwd)"
+default_repo="$(cd "${skill_dir}/../../.." && pwd)"
+evidence_root="${VERIFY_MENTIONS_EVIDENCE:-${XDG_STATE_HOME:-$HOME/.local/state}/verify-mentions}"
+scratch_root="${VERIFY_MENTIONS_SCRATCH:-${TMPDIR:-/tmp}/verify-mentions}"
+token_vars=(GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN)
+# Host settings that would override the sandbox identity or point git/gh elsewhere.
+leak_vars=(GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE EMAIL
+  GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_CEILING_DIRECTORIES
+  GIT_SSH GIT_SSH_COMMAND GIT_ASKPASS SSH_ASKPASS GIT_PROXY_COMMAND GH_HOST GH_REPO GH_ENTERPRISE_HOST GITHUB_API_URL)
+
+usage() {
+  cat <<'EOF'
+usage: control-mentions <command> [options]
+
+  launch   [--repo PATH]                 create a run; prints its id and paths; last line "ready: <id>"
+  doctor   --run ID                      read-only health check; last line "doctor: OK" or "doctor: FAIL"
+  gate     --run ID [goals-gate args]    goals gate into <evidence>/goals (run this before any drive)
+  origin   --run ID OWNER/REPO           create a seeded local bare repo that the fake gh clones as OWNER/REPO
+  refs     --run ID OWNER/REPO           list refs of that sandbox origin
+  drive    --run ID --label NAME [--cwd DIR] [--online] [--env K=V]... -- CMD [ARG...]
+                                         run CMD in the sandbox and record step evidence; exits with CMD's code
+  calls    --run ID [gh|git|herdr]       print recorded fake/wrapper calls for the whole run
+  evidence --run ID                      print the evidence directory
+  cleanup  --run ID                      kill what this run started, delete scratch, keep evidence
+
+ID is the run id printed by launch, or the evidence directory path.
+Roots: VERIFY_MENTIONS_EVIDENCE (default ~/.local/state/verify-mentions),
+       VERIFY_MENTIONS_SCRATCH (default ${TMPDIR:-/tmp}/verify-mentions).
+
+Inside drive: HOME, TMPDIR, GIT_CONFIG_GLOBAL point into scratch; PATH starts with
+the fakes and this scripts dir; MENTIONS_REPO is the checkout; VM_STATE, VM_STEP,
+VM_FIXTURES, VM_ORIGIN are set. FAKE_GH_FAIL="pr create" makes that gh call fail.
+
+Example:
+  id=$(control-mentions launch | sed -n 's/^ready: //p')
+  control-mentions doctor --run "$id"
+  control-mentions drive --run "$id" --label dry-run -- "$MENTIONS_REPO/scripts/install.sh" octo-org/sandbox --user octo-user --bot helper-bot --dry-run
+  control-mentions cleanup --run "$id"
+EOF
+}
+
+die() { printf 'control-mentions: %s\n' "$*" >&2; exit 2; }
+
+resolve_run() {
+  local id="$1"
+  [[ -n "$id" ]] || die "--run ID is required"
+  if [[ "$id" == /* ]]; then evidence="$id"; else evidence="${evidence_root}/${id}"; fi
+  [[ -f "${evidence}/run.env" ]] || die "no run at ${evidence} (missing run.env)"
+  # shellcheck disable=SC1091
+  source "${evidence}/run.env"
+  scratch="$VM_SCRATCH"
+  repo="$VM_REPO"
+}
+
+quote_argv() { local out="" a; for a in "$@"; do out+="$(printf '%q' "$a") "; done; printf '%s' "${out% }"; }
+
+offline_ok() { unshare -rn true >/dev/null 2>&1; }
+
+write_fakes() {
+  local bin="$1" state="$2" origin="$3" real_git="$4"
+  cat > "${bin}/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "git \$(printf '%q ' "\$@")" >> '${state}/git-calls.log'
+exec '${real_git}' "\$@"
+EOF
+  cat > "${bin}/herdr" <<EOF
+#!/usr/bin/env bash
+# Recording stand-in for herdr: never starts tabs or agents.
+printf '%s\n' "herdr \$(printf '%q ' "\$@")" >> '${state}/herdr-calls.log'
+# FAKE_HERDR_AGENTS=name1,name2 makes those agents look alive to pane list / agent get.
+agents_json() {
+  local IFS=, name out="" n=0
+  for name in \${FAKE_HERDR_AGENTS:-}; do
+    n=\$((n + 1)); out+="\${out:+,}{\"pane_id\":\"fake-pane-\${n}\",\"agent\":\"\${name}\",\"state\":\"working\"}"
+  done
+  printf '[%s]' "\$out"
+}
+case "\${1:-} \${2:-}" in
+  "pane list") echo "{\"result\":{\"panes\":\$(agents_json)}}" ;;
+  "agent get") if [[ ",\${FAKE_HERDR_AGENTS:-}," == *",\${3:-},"* ]]; then echo "{\"result\":{\"agent\":{\"name\":\"\${3}\",\"state\":\"working\"}}}"; else echo '{"error":{"code":"agent_not_found"}}'; exit 1; fi ;;
+  "tab create") echo '{"result":{"tab":{"tab_id":"fake-tab-1"},"root_pane":{"pane_id":"fake-pane-1"}}}' ;;
+  "agent start") echo "{\"result\":{\"agent\":{\"name\":\"\${3:-fake}\",\"state\":\"working\"}}}" ;;
+  "agent "*) echo '{"result":{"state":"idle","text":""}}' ;;
+  *) echo '{"result":{}}' ;;
+esac
+EOF
+  cat > "${bin}/herdr-heartbeat.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "herdr-heartbeat.sh \$(printf '%q ' "\$@")" >> '${state}/herdr-calls.log'
+exit 0
+EOF
+  cat > "${bin}/gh" <<EOF
+#!/usr/bin/env bash
+# Recording stand-in for gh. Talks only to sandbox origins under ${origin}.
+set -euo pipefail
+log='${state}/gh-calls.log'
+printf '%s\n' "gh \$(printf '%q ' "\$@")" >> "\$log"
+if [[ -n "\${FAKE_GH_FAIL:-}" && "\${1:-} \${2:-}" == "\${FAKE_GH_FAIL}" ]]; then
+  echo "fake gh refusing: \${FAKE_GH_FAIL}" >&2; exit 1
+fi
+fixture() { local f="\${FAKE_GH_FIXTURES:-\${VM_FIXTURES:-/nonexistent}/gh}/\$1"; if [[ -f "\$f" ]]; then cat "\$f"; else echo "fake gh: HTTP 404 (no fixture \$1)" >&2; exit 1; fi; }
+case "\${1:-} \${2:-}" in
+  "auth status") echo "github.com: logged in as sandbox-verifier (fake gh)" >&2; exit "\${FAKE_GH_AUTH_EXIT:-0}" ;;
+  "repo clone")
+    repo="\$3" dest="\$4"; shift 4; [[ "\${1:-}" == "--" ]] && shift
+    src='${origin}'/"\${repo}.git"
+    [[ -d "\$src" ]] || { echo "fake gh: no sandbox origin for \${repo}; run control-mentions origin" >&2; exit 1; }
+    exec git clone "\$@" "\$src" "\$dest" ;;
+  "pr create")
+    shift 2; repo="" body=""
+    while [[ \$# -gt 0 ]]; do case "\$1" in --repo|-R) repo="\$2"; shift 2 ;; --body-file|-F) body="\$2"; shift 2 ;; *) shift ;; esac; done
+    n=\$(( \$(ls '${state}' | grep -c '^pr-.*-body.md\$' || true) + 1 ))
+    [[ -n "\$body" && -f "\$body" ]] && cp "\$body" '${state}'/"pr-\${n}-body.md"
+    echo "https://github.invalid/\${repo}/pull/\${n}" ;;
+  "secret set")
+    name="\$3"; shift 3; repo="" value=""; from_body=0
+    while [[ \$# -gt 0 ]]; do case "\$1" in -R|--repo) repo="\$2"; shift 2 ;; -b|--body) value="\$2"; from_body=1; shift 2 ;; *) shift ;; esac; done
+    [[ "\$from_body" -eq 1 ]] || value="\$(cat)"
+    printf 'secret %s repo=%s bytes=%s sha256=%s\n' "\$name" "\$repo" "\${#value}" "\$(printf '%s' "\$value" | sha256sum | cut -c1-12)" >> '${state}/secrets.log'
+    echo "✓ Set Actions secret \${name} for \${repo} (fake gh)" ;;
+  "issue view"|"pr view") fixture "\${1}-view-\${3}.json" ;;
+  "pr diff") fixture "pr-diff-\${3}.patch" ;;
+  "api "*)
+    shift; endpoint="\${1:-}"; method=GET
+    for a in "\$@"; do case "\$a" in -f|-F|--field|--raw-field|--input) method=POST ;; esac; done
+    prev=""; for a in "\$@"; do [[ "\$prev" == "-X" || "\$prev" == "--method" ]] && method="\$a"; prev="\$a"; done
+    if [[ "\$endpoint" == graphql ]]; then
+      if printf '%s' "\$*" | grep -q 'mutation'; then echo '{"data":{"addDiscussionComment":{"comment":{"id":"fake-comment"}}}}'; else fixture graphql.json; fi
+    elif [[ "\$method" == GET ]]; then fixture "api/\${endpoint//\//__}.json"
+    else echo "{\"id\":1,\"html_url\":\"https://github.invalid/\${endpoint}\"}"; fi ;;
+  *) echo "fake gh: '\${1:-} \${2:-}' is not supported in the sandbox" >&2; exit 97 ;;
+esac
+EOF
+  chmod +x "${bin}/git" "${bin}/gh" "${bin}/herdr" "${bin}/herdr-heartbeat.sh"
+}
+
+cmd_launch() {
+  local repo_arg="$default_repo"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo_arg="$2"; shift 2 ;;
+      *) die "launch: unknown argument $1" ;;
+    esac
+  done
+  local repo_top real_git id
+  repo_top="$(git -C "$repo_arg" rev-parse --show-toplevel 2>/dev/null)" || die "not a git checkout: ${repo_arg}"
+  real_git="$(command -v git)"
+  id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  evidence="${evidence_root}/${id}"
+  scratch="${scratch_root}/${id}"
+  mkdir -p "${evidence}/steps" "${scratch}"/{home,tmp,bin,origin,state,pids}
+  : > "${scratch}/.verify-mentions-scratch"
+  : > "${scratch}/state/gh-calls.log"; : > "${scratch}/state/git-calls.log"; : > "${scratch}/state/herdr-calls.log"
+  cat > "${scratch}/home/.gitconfig" <<EOF
+[user]
+	name = Sandbox Verifier
+	email = sandbox-verifier@example.invalid
+[init]
+	defaultBranch = main
+[safe]
+	directory = *
+EOF
+  write_fakes "${scratch}/bin" "${scratch}/state" "${scratch}/origin" "$real_git"
+  {
+    printf 'VM_RUN=%q\n' "$id"
+    printf 'VM_REPO=%q\n' "$repo_top"
+    printf 'VM_SCRATCH=%q\n' "$scratch"
+    printf 'VM_EVIDENCE=%q\n' "$evidence"
+    printf 'VM_REAL_GIT=%q\n' "$real_git"
+    printf 'VM_HEAD=%q\n' "$(git -C "$repo_top" rev-parse HEAD)"
+  } > "${evidence}/run.env"
+  {
+    echo "run: ${id}"
+    echo "started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "repo: ${repo_top}"
+    echo "head: $(git -C "$repo_top" log -1 --format='%h %s')"
+    echo "tracked changes: $(git -C "$repo_top" status --porcelain --untracked-files=no | wc -l | tr -d ' ') file(s)"
+    echo "network for drives: $(offline_ok && echo 'none (unshare -rn)' || echo 'host (unshare unavailable)')"
+  } > "${evidence}/run.txt"
+  cat "${evidence}/run.txt"
+  echo "evidence: ${evidence}"
+  echo "scratch: ${scratch}"
+  echo "ready: ${id}"
+}
+
+cmd_doctor() {
+  local id="" problems=0 v
+  while [[ $# -gt 0 ]]; do case "$1" in --run) id="$2"; shift 2 ;; *) die "doctor: unknown argument $1" ;; esac; done
+  resolve_run "$id"
+  ok() { printf '  ok    %s\n' "$*"; }
+  bad() { printf '  FAIL  %s\n' "$*"; problems=$((problems + 1)); }
+  note() { printf '  note  %s\n' "$*"; }
+  echo "doctor: run ${VM_RUN}"
+  if [[ -f "${scratch}/.verify-mentions-scratch" ]]; then ok "scratch ${scratch}"; else bad "scratch missing: ${scratch} (cleaned up? launch a new run)"; fi
+  if [[ -d "${evidence}/steps" ]]; then ok "evidence ${evidence}"; else bad "evidence dir missing steps/: ${evidence}"; fi
+  if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    ok "repo ${repo} @ $(git -C "$repo" rev-parse --short HEAD)"
+    [[ "$(git -C "$repo" rev-parse HEAD)" == "$VM_HEAD" ]] || note "HEAD moved since launch (was ${VM_HEAD:0:7}); evidence names both"
+    v="$(git -C "$repo" status --porcelain --untracked-files=no | wc -l | tr -d ' ')"
+    if [[ "$v" == 0 ]]; then ok "no tracked changes"; else note "${v} tracked file(s) modified: drives use the working tree, the gate's clone-based install path sees HEAD"; fi
+  else
+    bad "repo is not a git checkout: ${repo}"
+  fi
+  # shellcheck disable=SC2016
+  if v="$(node -e 'const m=require(process.argv[1]);console.log(`${m.name} ${m.version}`)' "${repo}/.cursor-plugin/plugin.json" 2>&1)"; then ok "plugin ${v}"; else bad "plugin.json unreadable: ${v}"; fi
+  local tool
+  for tool in bash git node python3 jq curl shellcheck actionlint; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      case "$tool" in
+        bash) v="${BASH_VERSION}" ;;
+        python3) v="$(python3 --version 2>&1)" ;;
+        actionlint) v="$(actionlint -version 2>&1 | head -n 1)" ;;
+        shellcheck) v="$(shellcheck --version | sed -n 's/^version: //p')" ;;
+        *) v="$("$tool" --version 2>&1 | head -n 1)" ;;
+      esac
+      ok "${tool} ${v}"
+    else
+      bad "${tool} missing"
+    fi
+  done
+  [[ "${BASH_VERSINFO[0]}" -ge 4 ]] || bad "bash >= 4 required"
+  if [[ "$(PATH="${scratch}/bin:${PATH}" command -v gh)" == "${scratch}/bin/gh" ]]; then ok "drives resolve gh to the recording fake"; else bad "fake gh is not first on the drive PATH"; fi
+  if [[ -x "${scratch}/bin/herdr" && -x "${scratch}/bin/herdr-heartbeat.sh" ]]; then ok "drives resolve herdr and herdr-heartbeat.sh to recording fakes"; else bad "herdr fakes missing"; fi
+  local present=()
+  for v in "${token_vars[@]}"; do [[ -n "${!v:-}" ]] && present+=("$v"); done
+  if [[ ${#present[@]} -gt 0 ]]; then note "host has ${present[*]} set; drives and the gate strip it"; else ok "no GitHub token in the host env"; fi
+  present=()
+  for v in "${leak_vars[@]}"; do [[ -n "${!v:-}" ]] && present+=("$v"); done
+  if [[ ${#present[@]} -gt 0 ]]; then note "host sets ${present[*]}; drives and the gate strip them so commits use the sandbox identity"; fi
+  if offline_ok; then ok "drives run with no network (unshare -rn)"; else note "unshare unavailable: drives use host network; gh is faked and git is limited to file://, so GitHub is still unreachable"; fi
+  local pidfile pid alive=0
+  for pidfile in "${scratch}"/pids/*.pid; do
+    [[ -e "$pidfile" ]] || continue
+    pid="$(cat "$pidfile")"
+    if kill -0 "$pid" 2>/dev/null; then alive=$((alive + 1)); note "process ${pid} from $(basename "$pidfile") still running"; fi
+  done
+  [[ "$alive" -eq 0 ]] && ok "no leftover processes from this run"
+  if [[ -n "${CURSOR_PLUGINS_DIR:-}" && -f "${CURSOR_PLUGINS_DIR}/schemas/plugin.schema.json" ]]; then
+    if cmp -s "${CURSOR_PLUGINS_DIR}/schemas/plugin.schema.json" "${skill_dir}/schemas/plugin.schema.json"; then ok "vendored plugin schema matches ${CURSOR_PLUGINS_DIR}"; else note "vendored plugin schema differs from ${CURSOR_PLUGINS_DIR}; see schemas/SOURCE.md"; fi
+  fi
+  if [[ "$problems" -eq 0 ]]; then echo "doctor: OK"; else echo "doctor: FAIL (${problems} problem(s))"; return 1; fi
+}
+
+cmd_gate() {
+  local id=""
+  [[ "${1:-}" == "--run" ]] || die "gate: --run ID must come first"
+  id="$2"; shift 2
+  resolve_run "$id"
+  local out="${evidence}/goals" n=1
+  while [[ -e "$out" ]]; do n=$((n + 1)); out="${evidence}/goals-${n}"; done
+  mkdir -p "$out"
+  set +e
+  TMPDIR="${scratch}/tmp" node "${self_dir}/goals-gate.mjs" --repo "$repo" --out "$out" "$@"
+  local status=$?
+  set -e
+  echo "goals gate exit ${status}; report: ${out}/goals-gate.txt"
+  return "$status"
+}
+
+cmd_origin() {
+  local id="" slug=""
+  while [[ $# -gt 0 ]]; do case "$1" in --run) id="$2"; shift 2 ;; *) slug="$1"; shift ;; esac; done
+  resolve_run "$id"
+  [[ "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "origin: OWNER/REPO required"
+  local bare="${scratch}/origin/${slug}.git" seed="${scratch}/tmp/seed-${slug//\//-}"
+  [[ ! -e "$bare" ]] || die "origin exists: ${bare}"
+  mkdir -p "$(dirname "$bare")"
+  HOME="${scratch}/home" GIT_CONFIG_GLOBAL="${scratch}/home/.gitconfig" bash -c '
+    set -euo pipefail
+    git init -q -b main "$2"
+    printf "# %s\n\nSandbox repository for verify-mentions.\n" "$3" > "$2/README.md"
+    git -C "$2" add README.md
+    git -C "$2" commit -q -m "seed"
+    git init -q --bare "$1"
+    git -C "$1" symbolic-ref HEAD refs/heads/main
+    git -C "$2" push -q "$1" main
+  ' _ "$bare" "$seed" "$slug"
+  rm -rf "$seed"
+  echo "origin: ${slug} -> ${bare}"
+  git -C "$bare" for-each-ref --format='%(refname) %(objectname:short)'
+}
+
+cmd_refs() {
+  local id="" slug=""
+  while [[ $# -gt 0 ]]; do case "$1" in --run) id="$2"; shift 2 ;; *) slug="$1"; shift ;; esac; done
+  resolve_run "$id"
+  git -C "${scratch}/origin/${slug}.git" for-each-ref --format='%(refname) %(objectname:short)'
+}
+
+snapshot_refs() {
+  local bare
+  for bare in "${scratch}"/origin/*/*.git; do
+    [[ -d "$bare" ]] || continue
+    git -C "$bare" for-each-ref --format="${bare#"${scratch}"/origin/} %(refname) %(objectname:short)"
+  done
+}
+
+cmd_drive() {
+  local id="" label="" cwd="" online=0 envs=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --run) id="$2"; shift 2 ;;
+      --label) label="$2"; shift 2 ;;
+      --cwd) cwd="$2"; shift 2 ;;
+      --online) online=1; shift ;;
+      --env) envs+=("$2"); shift 2 ;;
+      --) shift; break ;;
+      *) die "drive: unknown argument $1 (put the command after --)" ;;
+    esac
+  done
+  [[ $# -gt 0 ]] || die "drive: command required after --"
+  resolve_run "$id"
+  [[ -f "${scratch}/.verify-mentions-scratch" ]] || die "scratch for ${VM_RUN} is gone; launch a new run"
+  [[ "$label" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "drive: --label must match [a-z0-9][a-z0-9-]*"
+  local n step
+  n=$(( $(find "${evidence}/steps" -mindepth 1 -maxdepth 1 -type d | wc -l) + 1 ))
+  step="${evidence}/steps/$(printf '%02d' "$n")-${label}"
+  mkdir -p "$step"
+  local state="${scratch}/state" netmode="none (unshare -rn)"
+  local gh0 git0 herdr0 secrets0
+  gh0=$(wc -l < "${state}/gh-calls.log"); git0=$(wc -l < "${state}/git-calls.log"); herdr0=$(wc -l < "${state}/herdr-calls.log")
+  secrets0=$( [[ -f "${state}/secrets.log" ]] && wc -l < "${state}/secrets.log" || echo 0)
+  snapshot_refs > "${step}/refs-before.txt"
+  (cd "${scratch}/tmp" && find . -mindepth 1 | sort) > "${step}/tmp-before.txt"
+
+  local -a envcmd=(env)
+  local v
+  for v in "${token_vars[@]}" "${leak_vars[@]}"; do envcmd+=(-u "$v"); done
+  envcmd+=(
+    HOME="${scratch}/home" TMPDIR="${scratch}/tmp"
+    GIT_CONFIG_GLOBAL="${scratch}/home/.gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_ALLOW_PROTOCOL=file GIT_TERMINAL_PROMPT=0
+    GH_CONFIG_DIR="${scratch}/home/.config/gh" GH_PROMPT_DISABLED=1
+    PATH="${scratch}/bin:${self_dir}:${PATH}" HERDR_HEARTBEAT="${scratch}/bin/herdr-heartbeat.sh"
+    MENTIONS_REPO="$repo" VM_RUN="$VM_RUN" VM_STATE="$state" VM_STEP="$step" VM_ORIGIN="${scratch}/origin" VM_FIXTURES="${skill_dir}/fixtures" VM_PIDS="${scratch}/pids"
+    "${envs[@]}"
+  )
+  local -a wrap=()
+  if [[ "$online" -eq 1 ]] || ! offline_ok; then
+    netmode="host$([[ "$online" -eq 1 ]] && echo ' (--online)' || echo ' (unshare unavailable)')"
+  else
+    wrap=(unshare -rn -- bash -c 'ip link set lo up 2>/dev/null || true; exec "$@"' _)
+  fi
+  {
+    echo "label: ${label}"
+    echo "cwd: ${cwd:-$repo}"
+    echo "network: ${netmode}"
+    echo "env: HOME/TMPDIR/GIT_CONFIG_GLOBAL in scratch; GitHub tokens and host git identity/location vars stripped; gh, herdr, herdr-heartbeat.sh are recording fakes; git limited to file://${envs[*]:+; extra: ${envs[*]}}"
+    echo "\$ $(quote_argv "$@")"
+  } > "${step}/cmd.txt"
+  set +e
+  (cd "${cwd:-$repo}" && "${wrap[@]}" "${envcmd[@]}" "$@") > "${step}/stdout.txt" 2> "${step}/stderr.txt" < /dev/null
+  local status=$?
+  set -e
+  echo "$status" > "${step}/exit.txt"
+  tail -n +"$((gh0 + 1))" "${state}/gh-calls.log" > "${step}/gh-calls.txt"
+  tail -n +"$((git0 + 1))" "${state}/git-calls.log" > "${step}/git-calls.txt"
+  tail -n +"$((herdr0 + 1))" "${state}/herdr-calls.log" > "${step}/herdr-calls.txt"
+  [[ -f "${state}/secrets.log" ]] && tail -n +"$((secrets0 + 1))" "${state}/secrets.log" > "${step}/secrets.txt"
+  cp "${state}"/pr-*-body.md "$step/" 2>/dev/null || true
+  snapshot_refs > "${step}/refs-after.txt"
+  (cd "${scratch}/tmp" && find . -mindepth 1 | sort) > "${step}/tmp-after.txt"
+  local refs_changed tmp_new
+  refs_changed="$(diff "${step}/refs-before.txt" "${step}/refs-after.txt" | grep '^[<>]' || true)"
+  tmp_new="$(comm -13 "${step}/tmp-before.txt" "${step}/tmp-after.txt" | grep -v '^\./seed-' || true)"
+  printf '%s\n' "${refs_changed:-none}" > "${step}/refs-changed.txt"
+  printf '%s\n' "${tmp_new:-none}" > "${step}/tmp-leftovers.txt"
+
+  echo "----- stdout"; cat "${step}/stdout.txt"
+  echo "----- stderr"; cat "${step}/stderr.txt"
+  echo "----- step $(basename "$step")"
+  echo "exit: ${status}"
+  echo "network: ${netmode}"
+  echo "gh calls: $(wc -l < "${step}/gh-calls.txt")$(awk '{printf "%s", (NR==1?" → ":"; ") $2" "$3}' "${step}/gh-calls.txt")"
+  echo "git calls: $(wc -l < "${step}/git-calls.txt")$(awk '{for (i = 2; i <= NF; i++) { if ($i == "-C" || $i == "-c") { i++; continue } if ($i !~ /^-/) { print $i; break } }}' "${step}/git-calls.txt" | sort | uniq -c | awk '{printf "%s%s×%s", (NR==1?" → ":", "), $2, $1}')"
+  echo "herdr calls: $(wc -l < "${step}/herdr-calls.txt")"
+  echo "origin refs changed: ${refs_changed:-none}" | tr '\n' ' '; echo
+  echo "tmp leftovers: ${tmp_new:-none}" | tr '\n' ' '; echo
+  echo "evidence: ${step}"
+  return "$status"
+}
+
+cmd_calls() {
+  local id="" kind="gh"
+  while [[ $# -gt 0 ]]; do case "$1" in --run) id="$2"; shift 2 ;; gh|git|herdr) kind="$1"; shift ;; *) die "calls: unknown argument $1" ;; esac; done
+  resolve_run "$id"
+  cat "${scratch}/state/${kind}-calls.log"
+}
+
+cmd_evidence() {
+  local id=""
+  while [[ $# -gt 0 ]]; do case "$1" in --run) id="$2"; shift 2 ;; *) die "evidence: unknown argument $1" ;; esac; done
+  resolve_run "$id"
+  echo "$evidence"
+}
+
+cmd_cleanup() {
+  local id=""
+  while [[ $# -gt 0 ]]; do case "$1" in --run) id="$2"; shift 2 ;; *) die "cleanup: unknown argument $1" ;; esac; done
+  resolve_run "$id"
+  local log="${evidence}/cleanup.txt" pidfile pid
+  {
+    echo "cleanup: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [[ -d "${scratch}/pids" ]]; then
+      for pidfile in "${scratch}"/pids/*.pid; do
+        [[ -e "$pidfile" ]] || continue
+        pid="$(cat "$pidfile")"
+        if kill -0 "$pid" 2>/dev/null && tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | grep -qF -e "$scratch" -e "$evidence"; then
+          kill "$pid" 2>/dev/null || true
+          echo "killed ${pid} ($(basename "$pidfile"))"
+        fi
+      done
+    fi
+    if [[ -f "${scratch}/.verify-mentions-scratch" ]]; then
+      cp "${scratch}/state/"*.log "$evidence/" 2>/dev/null || true
+      rm -rf "$scratch"
+      echo "removed scratch ${scratch}"
+    else
+      echo "scratch already gone: ${scratch}"
+    fi
+  } | tee "$log"
+  if [[ -d "$evidence" && -f "${evidence}/run.env" ]]; then
+    echo "evidence kept: ${evidence} ($(find "$evidence" -type f | wc -l | tr -d ' ') files, $(find "${evidence}/steps" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') step(s))" | tee -a "$log"
+  else
+    echo "ERROR: evidence missing after cleanup: ${evidence}" >&2
+    return 1
+  fi
+}
+
+main() {
+  local cmd="${1:-}"
+  [[ -n "$cmd" ]] || { usage >&2; exit 2; }
+  shift
+  case "$cmd" in
+    launch) cmd_launch "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    gate) cmd_gate "$@" ;;
+    origin) cmd_origin "$@" ;;
+    refs) cmd_refs "$@" ;;
+    drive) cmd_drive "$@" ;;
+    calls) cmd_calls "$@" ;;
+    evidence) cmd_evidence "$@" ;;
+    cleanup) cmd_cleanup "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"

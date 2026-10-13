@@ -1,0 +1,27 @@
+{
+  "event_name": "issue_comment",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "octo-user"
+    },
+    "issue": {
+      "number": 4
+    },
+    "comment": {
+      "id": 4,
+      "body": "no bot in this comment",
+      "node_id": "IC_4",
+      "updated_at": "2026-10-12T00:00:00Z"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "event_name": "pull_request_review_comment",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "octo-user"
+    },
+    "pull_request": {
+      "number": 7,
+      "node_id": "PR_7",
+      "head": {
+        "repo": {
+          "fork": false
+        }
+      }
+    },
+    "comment": {
+      "id": 55,
+      "body": "@helper-bot this line drops the error",
+      "node_id": "RC_55",
+      "updated_at": "2026-10-12T04:00:00Z",
+      "user": {
+        "login": "octo-user"
+      }
+    }
+  }
+}

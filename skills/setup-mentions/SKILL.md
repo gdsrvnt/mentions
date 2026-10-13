@@ -1,43 +1,91 @@
 ---
 name: setup-mentions
-description: "Install GitHub mention forwarding into a repository by running scripts/install.sh. Use when asked to set up mentions, install the mention-forward workflow, or route a user's @bot mentions to a webhook."
+description: "Install GitHub mention forwarding for a Grok Bot webhook routine. Run scripts/install.sh, set the Actions secrets, and paste templates/routine-prompt.md into the routine."
 ---
 
 # Set up mentions
 
-This is the only setup entry point. Do not copy the workflow into a repository by hand and do not invent a second installer. From the plugin root (the directory that contains `scripts/` and `skills/`), run `scripts/install.sh`.
+Inputs. `owner/repo`, the trigger login, and the bot handle. Optional flags are listed below.
+
+Outputs. A pull request URL, or a dry-run plan when the user asked to preview.
+
+Side effects. A real run pushes one branch, opens one pull request, and merges the repository into the handler config. Dry-run does none of those. This skill does not merge the pull request unless the user asks.
+
+This is the only setup entry point. Do not copy the workflow in by hand and do not invent a second installer. Run the script from the plugin root, the directory that contains `scripts/` and `skills/`.
 
 ## Collect
 
-- `owner/repo` (required), a GitHub repository
-- `--user` trigger login (required)
-- `--bot` bot handle (required). A leading `@` is optional
-- `--secret-prefix` (optional). Default `GROKBOT`, which creates secrets `GROKBOT_WEBHOOK_URL`, `GROKBOT_WEBHOOK_KEY`, and `GROKBOT_WEBHOOK_HEADER`
-- `--branch` (optional). Default `mentions/<bot>-forward`
-- `--dry-run` when the user wants a preview with no clone, push, or pull request
+Ask before running when a required value is missing. Do not guess the login or the repository.
 
-If a required value is missing, ask for it before running the script. Do not guess the login or the repository.
+- `--user` trigger login
+- `--bot` mention handle, with or without a leading `@`
+- `--comment-as` account that comments and commits. Default is the bot handle
+- `--secret-prefix` secret name prefix. Default `MENTION`
+- `--branch` branch name. Default `mentions/<bot>-forward`
+- `--config` handler config path
+- `--commit-name` git name the bot uses for commits
+- `--commit-email` git email the bot uses for commits
+- `--comments-only` leave the commit identity empty so the agent does not commit
+- `--update` replace an existing workflow file
+- `--dry-run` print the plan only
+
+A real install needs `--commit-name` and `--commit-email`, or `--comments-only`. The installer also requires `git user.name` and `git user.email` on the machine that runs it. Those commit the workflow. They are not copied into the handler config.
 
 ## Run
 
+Preview first when the user has not already seen the plan.
+
 ```bash
-bash scripts/install.sh "<owner/repo>" --user "<login>" --bot "<handle>"
+bash scripts/install.sh "<owner/repo>" --user "<login>" --bot "<handle>" --dry-run
 ```
 
-Add `--secret-prefix`, `--branch`, or `--dry-run` only when the user supplied them. Use `--dry-run` when they asked to preview.
+Then run the same command without `--dry-run`, and pass `--commit-name` and `--commit-email`, or `--comments-only`. Add `--secret-prefix`, `--branch`, `--comment-as`, `--config`, or `--update` only when the user supplied them.
 
-The script renders `templates/mention-forward.yml`, commits it on a new branch, pushes, opens a pull request, and prints the secrets and webhook routine. Do not merge the pull request or push a branch yourself. For the secrets, send the user the routine's field links plus one secret card per value, then set each repo secret from env (see the webhook header gotcha below); never ask the user to add them by hand. Return the pull request URL.
+The script renders `templates/mention-forward.yml`, commits `.github/workflows/mention-forward.yml`, pushes, opens a pull request, and writes the handler config. Before the push it checks that the active `gh` credential can push. That setup credential needs Contents write, Pull requests write, Workflows write, and Secrets write on the selected repositories. The push check does not prove those fine-grained scopes. The runtime bot token does not get Workflows or Secrets write.
 
-If the script fails, it deletes any remote branch it pushed and its temporary clone. Do not recreate that branch by hand. Fix the reported cause and run `scripts/install.sh` again.
+If pull request creation fails, or the script is interrupted after the push, it asks GitHub whether any pull request for that head exists, including a closed one. It deletes the branch only when that query succeeds and no pull request is there. If the query fails, or a pull request exists, it keeps the branch and prints it. Do not delete that branch by hand. Fix the reported cause and run `scripts/install.sh` again.
 
-## After the pull request is merged
+## Secrets
 
-The user creates the printed Actions secrets and the webhook routine, then merges. Issue, comment, and discussion workflows run from the default branch. Handle accepted events with the `handle-mention` skill, using the same trigger user, bot handle, and repository.
+The default secret names are `MENTION_WEBHOOK_URL`, `MENTION_WEBHOOK_HEADER`, and `MENTION_WEBHOOK_KEY`. A prefix `ACME` uses `ACME_WEBHOOK_URL`, `ACME_WEBHOOK_HEADER`, and `ACME_WEBHOOK_KEY`.
 
-## Gotcha: webhook header
+`MENTION_WEBHOOK_HEADER` is the full Authorization line from the Grok Bot routine panel. Leave `MENTION_WEBHOOK_KEY` unset in that case. Set the key only when the header secret is a bare header name.
 
-- The Grok Bot routine panel's "Authorization header" field is the full line, `Authorization: Bearer <key>`, not just a header name.
-- The forwarder accepts it pasted verbatim. If the `*_WEBHOOK_HEADER` secret contains `:`, it is sent as the header line and `*_WEBHOOK_KEY` is optional. Otherwise the forwarder sends `<header>: <key>`.
-- Symptom of a mismatch: the forward step fails with HTTP 401 `Invalid API key`.
-- Debug from the Actions logs with `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs`. `gh run view --log-failed` can come back empty.
-- For setup, prefer secret cards: the bot sets repo secrets from env with `printf %s "$VAR" | gh secret set <NAME> -R <owner>/<repo>`, never by hand and never by echoing values.
+Inside Grok Bot, set each secret from the environment with a secret card. The bot reads `WEBHOOK_URL`, `WEBHOOK_HEADER`, and, only for a bare header name, `WEBHOOK_KEY`.
+
+```bash
+printf '%s' "$WEBHOOK_URL" | gh secret set MENTION_WEBHOOK_URL -R "<owner/repo>"
+printf '%s' "$WEBHOOK_HEADER" | gh secret set MENTION_WEBHOOK_HEADER -R "<owner/repo>"
+```
+
+Do not echo the values. Do not ask the user to paste them into the GitHub UI. A person who is not inside Grok Bot runs the same `gh secret set` commands.
+
+## Routine
+
+Create a Grok Bot routine with a webhook trigger. Copy the webhook URL into the URL secret and the full Authorization line into the header secret. Paste `templates/routine-prompt.md` as the routine prompt. Do not rewrite it.
+
+## Merge and smoke test
+
+Merge the workflow pull request when the user asks. Events run only from the default branch.
+
+After the merge, the smoke test has three cases.
+
+1. The trigger user mentions the bot. The workflow runs and the routine receives the event.
+2. The bot mentions itself. The job is skipped.
+3. The trigger user comments without the mention. The job is skipped.
+
+Read the run with `gh run view`. When `gh run view --log-failed` is empty, read the job log with `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs`. A 401 that says the API key is invalid means the header secret was split. Put the full Authorization line in the header secret.
+
+## Flags
+
+- `--user`
+- `--bot`
+- `--comment-as`
+- `--secret-prefix`
+- `--branch`
+- `--config`
+- `--commit-name`
+- `--commit-email`
+- `--comments-only`
+- `--update`
+- `--dry-run`
