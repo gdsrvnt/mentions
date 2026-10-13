@@ -16,6 +16,9 @@ comment_as=""
 secret_prefix="MENTION"
 branch_name=""
 config_path=""
+commit_name=""
+commit_email=""
+comments_only=0
 dry_run=0
 do_update=0
 seen_user=0
@@ -26,6 +29,9 @@ seen_dry=0
 seen_update=0
 seen_comment_as=0
 seen_config=0
+seen_commit_name=0
+seen_commit_email=0
+seen_comments_only=0
 target_kind=""
 secret_url=""
 secret_key=""
@@ -38,13 +44,13 @@ did_push=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: install.sh <owner/repo> --user <login> --bot <handle> [--secret-prefix PREFIX] [--branch BRANCH] [--comment-as LOGIN] [--config PATH] [--update] [--dry-run]
+usage: install.sh <owner/repo> --user <login> --bot <handle> [--secret-prefix PREFIX] [--branch BRANCH] [--comment-as LOGIN] [--config PATH] [--commit-name NAME] [--commit-email EMAIL] [--comments-only] [--update] [--dry-run]
 EOF
 }
 
 show_help() {
   cat <<'EOF'
-usage: install.sh <owner/repo> --user <login> --bot <handle> [--secret-prefix PREFIX] [--branch BRANCH] [--comment-as LOGIN] [--config PATH] [--update] [--dry-run]
+usage: install.sh <owner/repo> --user <login> --bot <handle> [--secret-prefix PREFIX] [--branch BRANCH] [--comment-as LOGIN] [--config PATH] [--commit-name NAME] [--commit-email EMAIL] [--comments-only] [--update] [--dry-run]
 
 Render the mention-forward workflow for a trigger user and bot, commit it on a
 new branch, push the branch, and open a pull request. Prints the Actions
@@ -78,6 +84,16 @@ config without cloning, pushing, opening a pull request, or writing the config.
     ~/.config/mentions/config.json. Dry-run prints the document and does not
     write it.
 
+--commit-name NAME
+    git user.name the bot uses for commits. Required on a real install unless
+    --comments-only is set.
+
+--commit-email EMAIL
+    git user.email the bot uses for commits. Required with --commit-name.
+
+--comments-only
+    Write an empty commit identity. The handler comments and does not commit.
+
 --update
     When the workflow file already exists on the default branch, open a pull
     request that replaces it. Without this flag, an existing file is an error.
@@ -85,9 +101,14 @@ config without cloning, pushing, opening a pull request, or writing the config.
 --dry-run
     Print the plan only.
 
-On any failure after a push and before the pull request exists, the script
-deletes that remote branch and its temporary clone. Commits use the existing
-git user.name and user.email. This script does not embed tokens.
+The machine running this script needs its own git user.name and user.email.
+Those values commit the workflow. They are not written into the handler config.
+
+After a push, the script asks GitHub whether a pull request for the branch
+exists. It deletes the branch only when that query succeeds and no pull request
+is there. If the query fails, the branch is kept. This script does not embed
+tokens. The setup credential needs Contents write, Workflows write, and
+Secrets write on the repository. The runtime bot token does not.
 
 commit_comment is not an Actions trigger. actionlint rejects a workflow that
 subscribes to it.
@@ -253,6 +274,26 @@ parse_args() {
         do_update=1
         shift
         ;;
+      --commit-name)
+        [[ "$seen_commit_name" -eq 0 ]] || die "duplicate --commit-name"
+        seen_commit_name=1
+        require_value "--commit-name" "${2-}"
+        commit_name="$2"
+        shift 2
+        ;;
+      --commit-email)
+        [[ "$seen_commit_email" -eq 0 ]] || die "duplicate --commit-email"
+        seen_commit_email=1
+        require_value "--commit-email" "${2-}"
+        commit_email="$2"
+        shift 2
+        ;;
+      --comments-only)
+        [[ "$seen_comments_only" -eq 0 ]] || die "duplicate --comments-only"
+        seen_comments_only=1
+        comments_only=1
+        shift
+        ;;
       --dry-run)
         [[ "$seen_dry" -eq 0 ]] || die "duplicate --dry-run"
         seen_dry=1
@@ -319,6 +360,20 @@ validate_all() {
   if ! valid_prefix "$secret_prefix"; then
     die "invalid --secret-prefix: ${secret_prefix} (use [A-Z][A-Z0-9]{0,24}, for example MENTION)"
   fi
+  if [[ "$comments_only" -eq 1 ]]; then
+    if [[ "$seen_commit_name" -eq 1 || "$seen_commit_email" -eq 1 ]]; then
+      die "--comments-only does not take --commit-name or --commit-email"
+    fi
+    commit_name=""
+    commit_email=""
+  elif [[ "$dry_run" -eq 0 ]]; then
+    if [[ -z "$commit_name" || -z "$commit_email" ]]; then
+      die "--commit-name and --commit-email are required unless --comments-only"
+    fi
+    if [[ "$commit_email" != *@* ]]; then
+      die "invalid --commit-email"
+    fi
+  fi
   secret_url="${secret_prefix}_WEBHOOK_URL"
   secret_key="${secret_prefix}_WEBHOOK_KEY"
   secret_header="${secret_prefix}_WEBHOOK_HEADER"
@@ -376,8 +431,8 @@ config:
   "gh_token_env": "GH_TOKEN",
   "state_dir": "${HOME}/.local/state/mentions",
   "work_root": "${HOME}/.local/share/mentions/work",
-  "commit_name": "",
-  "commit_email": ""
+  "commit_name": "${commit_name}",
+  "commit_email": "${commit_email}"
 }
 EOF
 }
@@ -548,6 +603,8 @@ merge_config() {
       --arg trigger_user "$trigger_user" \
       --arg bot_handle "$bot_handle" \
       --arg comment_as "$comment_as" \
+      --arg commit_name "$commit_name" \
+      --arg commit_email "$commit_email" \
       '
         .trigger_user = $trigger_user
         | .bot_handle = $bot_handle
@@ -555,8 +612,8 @@ merge_config() {
         | .gh_token_env = (.gh_token_env // "GH_TOKEN")
         | .state_dir = (.state_dir // (env.HOME + "/.local/state/mentions"))
         | .work_root = (.work_root // (env.HOME + "/.local/share/mentions/work"))
-        | .commit_name = (.commit_name // "")
-        | .commit_email = (.commit_email // "")
+        | .commit_name = $commit_name
+        | .commit_email = $commit_email
         | .repos = ((.repos // []) + [$repo] | unique)
       ' "$config_path" > "$tmp"; then
       rm -f "$tmp"
@@ -570,6 +627,8 @@ merge_config() {
       --arg comment_as "$comment_as" \
       --arg state_dir "${HOME}/.local/state/mentions" \
       --arg work_root "${HOME}/.local/share/mentions/work" \
+      --arg commit_name "$commit_name" \
+      --arg commit_email "$commit_email" \
       '{
         trigger_user: $trigger_user,
         bot_handle: $bot_handle,
@@ -578,8 +637,8 @@ merge_config() {
         gh_token_env: "GH_TOKEN",
         state_dir: $state_dir,
         work_root: $work_root,
-        commit_name: "",
-        commit_email: ""
+        commit_name: $commit_name,
+        commit_email: $commit_email
       }' > "$tmp"; then
       rm -f "$tmp"
       die "could not write ${config_path}"
@@ -589,7 +648,7 @@ merge_config() {
 }
 
 run_install() {
-  local base_branch pr_url body_file pr_title
+  local base_branch pr_url body_file pr_title pr_status found list_status
   export GIT_TERMINAL_PROMPT=0
   export GH_PROMPT_DISABLED=1
   if ! command -v gh >/dev/null 2>&1; then
@@ -620,6 +679,9 @@ run_install() {
   if [[ -e "${clone_dir}/.github/workflows/mention-forward.yml" && "$do_update" -eq 0 ]]; then
     die "workflow already exists: .github/workflows/mention-forward.yml (re-run with --update)"
   fi
+  if ! gh api "repos/${repo_arg}" --jq '(.permissions.push == true or .permissions.admin == true or .permissions.maintain == true)' | grep -qx true; then
+    die "setup credential cannot push to ${repo_arg}. It needs Contents write, Workflows write, and Secrets write. The runtime bot token does not get Workflows or Secrets."
+  fi
   git -C "$clone_dir" checkout -q -b "$branch_name"
   write_workflow "${clone_dir}/.github/workflows"
   git -C "$clone_dir" add -- .github/workflows/mention-forward.yml
@@ -631,8 +693,32 @@ run_install() {
   body_file="${tmp_root}/pr-body.md"
   write_pr_body "$body_file"
   pr_title="Forward @${bot_handle} mentions from ${trigger_user}"
-  pr_url="$(gh pr create --repo "$repo_arg" --base "$base_branch" --head "$branch_name" --title "$pr_title" --body-file "$body_file")"
-  did_push=0
+  set +e
+  pr_url="$(gh pr create --repo "$repo_arg" --base "$base_branch" --head "$branch_name" --title "$pr_title" --body-file "$body_file" 2>"${tmp_root}/pr-create.err")"
+  pr_status=$?
+  set -e
+  if [[ "$pr_status" -ne 0 ]]; then
+    printf 'pr create failed; checking for an existing pull request\n' >&2
+    set +e
+    found="$(gh pr list --repo "$repo_arg" --head "$branch_name" --state open --json url --jq '.[0].url' 2>"${tmp_root}/pr-list.err" | tr -d '[:space:]')"
+    list_status=$?
+    set -e
+    if [[ "$list_status" -eq 0 && -n "$found" && "$found" != "null" ]]; then
+      did_push=0
+      pr_url="$found"
+      printf 'pull request exists: %s\n' "$pr_url" >&2
+      printf 'kept branch %s\n' "$branch_name" >&2
+    elif [[ "$list_status" -eq 0 ]]; then
+      printf 'no pull request for %s\n' "$branch_name" >&2
+      die "pull request was not created"
+    else
+      did_push=0
+      printf 'could not confirm whether a pull request exists; kept branch %s\n' "$branch_name" >&2
+      die "pull request status is unknown"
+    fi
+  else
+    did_push=0
+  fi
   if ! merge_config; then
     die "pull request is open but the handler config was not written: ${pr_url}"
   fi

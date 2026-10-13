@@ -194,6 +194,8 @@ expect_fail "$install" "$bare" --user Alice --user Bob --bot my-bot --dry-run
 expect_fail "$install" "$bare" --user Alice --bot my-bot --nope
 expect_fail "$install" "$bare" --dry-run
 expect_fail "$install" "$tmp" --user Alice --bot my-bot
+expect_fail "$install" "example/mentions" --user Alice --bot my-bot
+expect_fail "$install" "$bare" --user Alice --bot my-bot --comments-only --commit-name Bot --dry-run
 help_out="${tmp}/help.out"
 "$install" --help > "$help_out"
 assert_contains "$help_out" "--dry-run"
@@ -201,6 +203,9 @@ assert_contains "$help_out" "--secret-prefix"
 assert_contains "$help_out" "--update"
 assert_contains "$help_out" "--comment-as"
 assert_contains "$help_out" "--config"
+assert_contains "$help_out" "--commit-name"
+assert_contains "$help_out" "--commit-email"
+assert_contains "$help_out" "--comments-only"
 "$install" -h > "${tmp}/help-short.out"
 
 stamp="${tmp}/network-stamp"
@@ -238,12 +243,20 @@ if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "api" ]]; then
-  printf '%s\n' "Alice"
-  exit 0
+  case "${2:-}" in
+    users/*) printf '%s\n' "Alice"; exit 0 ;;
+    repos/*) printf '%s\n' "true"; exit 0 ;;
+  esac
+  printf 'unexpected api: %s\n' "$*" >&2
+  exit 1
 fi
 if [[ "${1:-}" == "repo" && "${2:-}" == "clone" ]]; then
   dest="${4:?dest}"
   git clone --quiet "${MENTIONS_TEST_BARE:?}" "$dest"
+  exit 0
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  printf '%s\n' "null"
   exit 0
 fi
 printf 'fake gh refusing: %s\n' "$*" >&2
@@ -251,7 +264,7 @@ exit 1
 EOF
 chmod +x "${fakebin}/gh"
 set +e
-PATH="${fakebin}:${PATH}" MENTIONS_TEST_BARE="$bare" "$install" "example/mentions" --user Alice --bot my-bot > "$rollback_out" 2>"$rollback_err"
+PATH="${fakebin}:${PATH}" MENTIONS_TEST_BARE="$bare" "$install" "example/mentions" --user Alice --bot my-bot --commit-name "Mentions Bot" --commit-email "bot@example.com" > "$rollback_out" 2>"$rollback_err"
 rollback_status=$?
 set -e
 if [[ "$rollback_status" -eq 0 ]]; then
@@ -262,7 +275,7 @@ if git -C "$bare" show-ref --verify --quiet refs/heads/mentions/my-bot-forward; 
 fi
 assert_contains "$rollback_err" "rollback: deleting remote branch mentions/my-bot-forward"
 assert_contains "$rollback_err" "rollback: removing temp clone"
-assert_contains "$rollback_err" "fake gh refusing: pr create"
+assert_contains "$rollback_err" "pull request was not created"
 temp_path="$(sed -n 's/^temp-clone: //p' "$rollback_err" | head -n 1)"
 if [[ -z "$temp_path" ]]; then
   fail "temp-clone path was not printed"
@@ -423,8 +436,12 @@ if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "api" ]]; then
-  printf '%s\n' "alice"
-  exit 0
+  case "${2:-}" in
+    users/*) printf '%s\n' "alice"; exit 0 ;;
+    repos/*) printf '%s\n' "true"; exit 0 ;;
+  esac
+  printf 'unexpected api: %s\n' "$*" >&2
+  exit 1
 fi
 if [[ "${1:-}" == "repo" && "${2:-}" == "clone" ]]; then
   dest="${4:?dest}"
@@ -442,14 +459,19 @@ chmod +x "${canon_bin}/gh"
 canon_cfg="${tmp}/canon-config.json"
 printf '%s\n' '{"repos":["other/repo"],"trigger_user":"old"}' > "$canon_cfg"
 PATH="${canon_bin}:${PATH}" MENTIONS_TEST_BARE="$bare" MENTIONS_CONFIG="$canon_cfg" \
-  "$install" "example/mentions" --user Alice --bot my-bot > "${tmp}/canon.out" 2>"${tmp}/canon.err"
+  "$install" "example/mentions" --user Alice --bot my-bot --commit-name "Mentions Bot" --commit-email "bot@example.com" > "${tmp}/canon.out" 2>"${tmp}/canon.err"
 canon_wf="$(git -C "$bare" show "mentions/my-bot-forward:.github/workflows/mention-forward.yml")"
 printf '%s\n' "$canon_wf" > "${tmp}/canon-wf.yml"
 assert_contains "${tmp}/canon-wf.yml" "github.actor == 'alice'"
 assert_contains "${tmp}/canon.out" "trigger_user: alice"
-if ! jq -e '(.repos | index("example/mentions")) != null and (.repos | index("other/repo")) != null and .trigger_user == "alice"' "$canon_cfg" >/dev/null; then
+if ! jq -e '(.repos | index("example/mentions")) != null and (.repos | index("other/repo")) != null and .trigger_user == "alice" and .commit_name == "Mentions Bot" and .commit_email == "bot@example.com"' "$canon_cfg" >/dev/null; then
   fail "config did not merge repos or canonicalize the user: $(cat "$canon_cfg")"
 fi
+ident_repo="${tmp}/ident-repo"
+git init -q -b main "$ident_repo"
+printf '%s\n' "note" > "${ident_repo}/note.txt"
+git -C "$ident_repo" add note.txt
+git -C "$ident_repo" -c user.name="$(jq -r .commit_name "$canon_cfg")" -c user.email="$(jq -r .commit_email "$canon_cfg")" commit -q -m "commit with the installer identity"
 
 update_bare="${tmp}/update.git"
 update_work="${tmp}/update-seed"
@@ -462,7 +484,7 @@ git -C "$update_work" push -q origin main
 update_err="${tmp}/update-refuse.err"
 set +e
 PATH="${canon_bin}:${PATH}" MENTIONS_TEST_BARE="$update_bare" MENTIONS_CONFIG="${tmp}/update-config.json" \
-  "$install" "example/mentions" --user Alice --bot my-bot > "${tmp}/update-refuse.out" 2>"$update_err"
+  "$install" "example/mentions" --user Alice --bot my-bot --commit-name "Mentions Bot" --commit-email "bot@example.com" > "${tmp}/update-refuse.out" 2>"$update_err"
 update_status=$?
 set -e
 if [[ "$update_status" -eq 0 ]]; then
@@ -470,11 +492,55 @@ if [[ "$update_status" -eq 0 ]]; then
 fi
 assert_contains "$update_err" "re-run with --update"
 PATH="${canon_bin}:${PATH}" MENTIONS_TEST_BARE="$update_bare" MENTIONS_CONFIG="${tmp}/update-config.json" \
-  "$install" "example/mentions" --user Alice --bot my-bot --update > "${tmp}/update.out" 2>"${tmp}/update.err"
+  "$install" "example/mentions" --user Alice --bot my-bot --commit-name "Mentions Bot" --commit-email "bot@example.com" --update > "${tmp}/update.out" 2>"${tmp}/update.err"
 update_wf="$(git -C "$update_bare" show "mentions/my-bot-forward:.github/workflows/mention-forward.yml")"
 printf '%s\n' "$update_wf" > "${tmp}/update-wf.yml"
 assert_contains "${tmp}/update-wf.yml" "github.actor == 'alice'"
 assert_contains "${tmp}/update-wf.yml" "name: mention-forward"
 assert_contains "${tmp}/update.out" "pull_request:"
+
+lost_bare="${tmp}/lost.git"
+lost_work="${tmp}/lost-seed"
+seed_bare "$lost_bare" "$lost_work"
+lost_bin="${tmp}/lostbin"
+mkdir -p "$lost_bin"
+cat > "${lost_bin}/gh" << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "api" ]]; then
+  case "${2:-}" in
+    users/*) printf '%s\n' "alice"; exit 0 ;;
+    repos/*) printf '%s\n' "true"; exit 0 ;;
+  esac
+  exit 1
+fi
+if [[ "${1:-}" == "repo" && "${2:-}" == "clone" ]]; then
+  dest="${4:?dest}"
+  git clone --quiet "${MENTIONS_TEST_BARE:?}" "$dest"
+  exit 0
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+  printf '%s\n' "https://example.invalid/pull/9" > "${MENTIONS_LOST_URL:?}"
+  exit 1
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  cat "${MENTIONS_LOST_URL:?}"
+  exit 0
+fi
+printf 'fake gh refusing: %s\n' "$*" >&2
+exit 1
+EOF
+chmod +x "${lost_bin}/gh"
+lost_url="${tmp}/lost.url"
+PATH="${lost_bin}:${PATH}" MENTIONS_TEST_BARE="$lost_bare" MENTIONS_LOST_URL="$lost_url" MENTIONS_CONFIG="${tmp}/lost-config.json" \
+  "$install" "example/mentions" --user Alice --bot my-bot --commit-name "Mentions Bot" --commit-email "bot@example.com" > "${tmp}/lost.out" 2>"${tmp}/lost.err"
+if ! git -C "$lost_bare" show-ref --verify --quiet refs/heads/mentions/my-bot-forward; then
+  fail "branch was deleted after a lost pull request response: $(cat "${tmp}/lost.err")"
+fi
+assert_contains "${tmp}/lost.err" "https://example.invalid/pull/9"
+assert_contains "${tmp}/lost.err" "kept branch mentions/my-bot-forward"
 
 printf '%s\n' "ok"
