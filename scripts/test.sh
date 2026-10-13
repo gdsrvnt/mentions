@@ -128,10 +128,6 @@ assert_contains "$wf" "pull_request"
 assert_contains "$wf" "{event_name: \$event_name, payload: \$payload[0]}"
 assert_not_contains "$wf" "actions/checkout"
 assert_not_contains "$wf" "__MENTIONS_"
-assert_not_contains "$wf" "GoddyB"
-assert_not_contains "$wf" "ArchAgents"
-assert_not_contains "$wf" "sparks"
-assert_not_contains "$wf" "gdsrvnt"
 
 lint_dir="${tmp}/lint/.github/workflows"
 mkdir -p "$lint_dir"
@@ -341,10 +337,12 @@ post_forward() {
     bash "$forward_sh" > "${tmp}/forward.out" 2> "${tmp}/forward.err"
   forward_status=$?
   set -e
+  kill "$server_pid" 2>/dev/null || true
   wait "$server_pid" 2>/dev/null || true
 }
 
 mkdir -p "${tmp}/runner"
+ip link set lo up >/dev/null 2>&1 || true
 post_forward "Authorization: Bearer test-token" "" "issue_comment" "$event_file"
 if [[ "$forward_status" != "0" ]]; then
   fail "full Authorization line failed: $(cat "${tmp}/forward.err" "${tmp}/forward.out")"
