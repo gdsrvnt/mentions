@@ -1,0 +1,25 @@
+{
+  "event_name": "commit_comment",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "octo-user"
+    },
+    "comment": {
+      "id": 1,
+      "body": "@helper-bot",
+      "node_id": "CC_1",
+      "updated_at": "2026-10-12T00:00:00Z",
+      "commit_id": "abc"
+    }
+  }
+}

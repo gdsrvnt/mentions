@@ -1,0 +1,33 @@
+{
+  "event_name": "pull_request_target",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "octo-user"
+    },
+    "pull_request": {
+      "number": 7,
+      "title": "Parser",
+      "body": "@helper-bot please review",
+      "node_id": "PR_7",
+      "updated_at": "2026-10-12T02:00:00Z",
+      "user": {
+        "login": "octo-user"
+      },
+      "head": {
+        "repo": {
+          "fork": false
+        }
+      }
+    }
+  }
+}

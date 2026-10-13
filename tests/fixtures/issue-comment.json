@@ -1,0 +1,33 @@
+{
+  "event_name": "issue_comment",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "octo-user"
+    },
+    "issue": {
+      "number": 4,
+      "node_id": "I_4",
+      "title": "Bug",
+      "body": "details"
+    },
+    "comment": {
+      "id": 1001,
+      "body": "@helper-bot what failed?",
+      "node_id": "IC_1001",
+      "updated_at": "2026-10-12T01:00:00Z",
+      "user": {
+        "login": "octo-user"
+      }
+    }
+  }
+}

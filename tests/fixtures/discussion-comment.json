@@ -1,0 +1,29 @@
+{
+  "event_name": "discussion_comment",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "octo-user"
+    },
+    "discussion": {
+      "number": 3,
+      "node_id": "D_3"
+    },
+    "comment": {
+      "id": 8,
+      "body": "@helper-bot one more question",
+      "node_id": "DC_8",
+      "updated_at": "2026-10-12T06:00:00Z",
+      "parent_node_id": null
+    }
+  }
+}

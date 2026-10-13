@@ -1,0 +1,34 @@
+{
+  "event_name": "issue_comment",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "octo-user"
+    },
+    "issue": {
+      "number": 7,
+      "node_id": "I_7",
+      "pull_request": {
+        "url": "https://api.github.com/repos/octo-org/sandbox/pulls/7"
+      }
+    },
+    "comment": {
+      "id": 1001,
+      "body": "@helper-bot summarize the open review threads on this PR",
+      "node_id": "IC_1001",
+      "updated_at": "2026-10-12T01:00:00Z",
+      "user": {
+        "login": "octo-user"
+      }
+    }
+  }
+}

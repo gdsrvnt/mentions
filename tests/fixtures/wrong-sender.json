@@ -1,0 +1,27 @@
+{
+  "event_name": "issue_comment",
+  "config": {
+    "trigger_user": "octo-user",
+    "bot_handle": "helper-bot",
+    "repos": [
+      "octo-org/sandbox"
+    ]
+  },
+  "payload": {
+    "repository": {
+      "full_name": "octo-org/sandbox"
+    },
+    "sender": {
+      "login": "mallory"
+    },
+    "issue": {
+      "number": 4
+    },
+    "comment": {
+      "id": 2,
+      "body": "@helper-bot do it",
+      "node_id": "IC_2",
+      "updated_at": "2026-10-12T00:00:00Z"
+    }
+  }
+}
