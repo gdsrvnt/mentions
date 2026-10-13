@@ -94,6 +94,23 @@ function requestPath(stateDir, threadKey, ledgerPath) {
   return join(stateDir, "threads", threadKey, "requests", `${ledgerPath[1]}-${ledgerPath[2]}.md`);
 }
 
+function queueRequest(input) {
+  if (!ledgerOk(input.ledger_path) || typeof input.request_text !== "string") {
+    return null;
+  }
+  const dir = join(input.state_dir, "threads", input.thread_key, "queue");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${input.ledger_path[1]}-${input.ledger_path[2]}.md`);
+  try {
+    writeFileSync(path, input.request_text, { flag: "wx" });
+  } catch (error) {
+    if (error.code !== "EEXIST") {
+      throw error;
+    }
+  }
+  return path;
+}
+
 function jobPath(stateDir, threadKey) {
   return join(stateDir, "jobs", `${threadKey}.json`);
 }
@@ -143,6 +160,13 @@ function claim(input) {
   }
   const lock = takeLock(input.state_dir, input.thread_key);
   if (!lock.ok) {
+    if (lock.reason === "busy") {
+      try {
+        return { ...lock, request_path: queueRequest(input) };
+      } catch (error) {
+        return fail(error.code || "claim_failed");
+      }
+    }
     return lock;
   }
   try {
@@ -177,7 +201,7 @@ function claim(input) {
       }
     }
     const job = readJob(jobPath(input.state_dir, input.thread_key));
-    const running = job && job.status === "running";
+    const running = Boolean(job && job.status === "running" && input.agent_alive === true);
     const action = running ? "steer" : "launch";
     let steerPath = null;
     const promptPath = join(threadDir, "prompt.md");
@@ -196,7 +220,7 @@ function claim(input) {
       prompt_path: promptPath,
       steer_path: steerPath,
       job_path: jobPath(input.state_dir, input.thread_key),
-      work_dir: join(input.work_root, input.owner, input.repo),
+      work_dir: join(input.work_root, input.owner, input.repo, input.thread_key),
       agent_name: input.agent_name ?? null,
       reply_target: input.reply_target ?? null,
     };
@@ -240,14 +264,12 @@ function release(input) {
     return lock;
   }
   const path = jobPath(input.state_dir, input.thread_key);
-  const previous = readJob(path);
-  if (!previous || previous.status !== "running") {
-    mkdirSync(join(input.state_dir, "jobs"), { recursive: true });
-    writeAtomic(
-      path,
-      `${JSON.stringify({ ...(previous ?? {}), status: "failed", agent_name: input.agent_name ?? previous?.agent_name ?? null })}\n`,
-    );
-  }
+  const previous = readJob(path) ?? {};
+  mkdirSync(join(input.state_dir, "jobs"), { recursive: true });
+  writeAtomic(
+    path,
+    `${JSON.stringify({ ...previous, status: "failed", agent_name: input.agent_name ?? previous.agent_name ?? null })}\n`,
+  );
   dropLock(lock.dir);
   return { ok: true, status: "failed", job_path: path };
 }

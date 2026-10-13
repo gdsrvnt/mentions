@@ -147,8 +147,8 @@ test("work directories include the owner", () => {
     ...base(dir, { thread_key: "fedcba9876543210", owner: "octo", repo: "org-sandbox" }),
     op: "claim",
   });
-  assert.match(left.work_dir, /octo-org\/sandbox$/);
-  assert.match(right.work_dir, /octo\/org-sandbox$/);
+  assert.match(left.work_dir, /octo-org\/sandbox\/0123456789abcdef$/);
+  assert.match(right.work_dir, /octo\/org-sandbox\/fedcba9876543210$/);
   assert.notEqual(left.work_dir, right.work_dir);
   rmSync(dir, { recursive: true, force: true });
 });
