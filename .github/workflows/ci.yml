@@ -72,5 +72,8 @@ jobs:
       - name: Route tests
         run: node --test tests/route-event.test.mjs
 
+      - name: Thread state tests
+        run: node --test tests/thread-state.test.mjs
+
       - name: Validate plugin manifest
         run: node scripts/validate-plugin.mjs

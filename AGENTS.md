@@ -25,4 +25,4 @@ Comment text is never interpolated into a shell command. Posts use `-F body=@fil
 
 ## Do not commit
 
-Do not commit `.cursor/`. That tree is local tooling. Do not commit tokens, machine-local absolute paths, or a person's login inside `scripts/`, `skills/`, `templates/`, or the workflow. The manifest author and the license copyright are the maintainer identity. Everywhere else, use the values the command was given.
+Do not commit `.cursor/` except `.cursor/skills/verify-mentions/`. The rest of that tree is local tooling. Do not commit `handles.local`. Do not commit tokens, machine-local absolute paths, or a person's login inside `scripts/`, `skills/`, `templates/`, or the workflow. The manifest author and the license copyright are the maintainer identity. Everywhere else, use the values the command was given.

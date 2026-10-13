@@ -33,7 +33,7 @@ A workflow in the target repository posts `{event_name, payload}` to the Grok Bo
 
 | Tool | Version | Why |
 | --- | --- | --- |
-| Grok Bot | 0.49.0 | Webhook routines and secret cards. The marketplace listing is hidden from Cursor IDE. |
+| Grok Bot | 0.49.0 | Webhook routines and secret cards. Cursor and Grok Bot can install the plugin; the webhook routine runs in Grok Bot. |
 | herdr | 0.9.3 | Launches the reply agent. Install from `https://herdr.dev` and put `herdr` on `PATH`. |
 | git | any current | Clones the target repository during install. |
 | gh | any current | Opens the workflow pull request and calls the GitHub API. |
@@ -191,6 +191,7 @@ shellcheck scripts/install.sh scripts/test.sh
 actionlint
 bash scripts/test.sh
 node --test tests/route-event.test.mjs
+node --test tests/thread-state.test.mjs
 node scripts/validate-plugin.mjs
 ```
 
