@@ -33,6 +33,9 @@ fi
 if ! command -v git >/dev/null 2>&1; then
   fail "git is required"
 fi
+if ! command -v jq >/dev/null 2>&1; then
+  fail "jq is required"
+fi
 
 assert_contains() {
   local file="$1"
@@ -291,74 +294,68 @@ printf '%s\n' '{"comment":{"body":"@my-bot please look"},"issue":{"number":1,"ti
 boundary_file="${tmp}/boundary.json"
 printf '%s\n' '{"comment":{"body":"ask @my-bot2 later"},"issue":{"number":1,"title":"t","body":""}}' > "$boundary_file"
 
-capture_py="${tmp}/capture.py"
-cat > "$capture_py" << 'PY'
-import json
-import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-out = sys.argv[1]
-
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length)
-        recorded = {"headers": {key: value for key, value in self.headers.items()}, "body": body.decode()}
-        with open(out, "w", encoding="utf-8") as handle:
-            json.dump(recorded, handle)
-        self.send_response(204)
-        self.end_headers()
-
-    def log_message(self, fmt, *args):
-        return
-
-server = HTTPServer(("127.0.0.1", 0), Handler)
-print(server.server_address[1], flush=True)
-server.handle_request()
-PY
+curl_bin="${tmp}/curlbin"
+mkdir -p "$curl_bin"
+cat > "${curl_bin}/curl" << 'EOF'
+#!/usr/bin/env bash
+# Records the headers the forward step passes to curl and prints 204.
+# A live socket is unreachable in a fresh network namespace, and the macOS
+# python3 starter does not bind one before the test gives up.
+set -euo pipefail
+headers_file="${MENTIONS_CAPTURE:?}"
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -H)
+      printf '%s\n' "$2" >> "$headers_file"
+      shift 2
+      ;;
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    -w|-X|--data-binary)
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -n "$out" ]]; then
+  printf '%s\n' "ok" > "$out"
+fi
+printf '%s' "204"
+EOF
+chmod +x "${curl_bin}/curl"
 
 post_forward() {
   header="$1"
   key="$2"
   event_name="$3"
   event_path="$4"
-  capture="${tmp}/capture.json"
-  port_file="${tmp}/port"
-  rm -f "$capture" "$port_file"
-  python3 "$capture_py" "$capture" > "$port_file" 2>"${tmp}/capture.err" &
-  server_pid=$!
-  spins=0
-  while [[ ! -s "$port_file" && "$spins" -lt 50 ]]; do
-    spins=$((spins + 1))
-    sleep 0.05
-  done
-  port="$(cat "$port_file" 2>/dev/null || true)"
-  if [[ -z "$port" ]]; then
-    kill "$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
-    fail "webhook stub did not print a port: $(cat "${tmp}/capture.err" 2>/dev/null || true)"
-  fi
+  capture="${tmp}/capture.txt"
+  : > "$capture"
   set +e
-  EVENT_NAME="$event_name" \
+  PATH="${curl_bin}:${PATH}" \
+    MENTIONS_CAPTURE="$capture" \
+    EVENT_NAME="$event_name" \
     GITHUB_EVENT_PATH="$event_path" \
-    WEBHOOK_URL="http://127.0.0.1:${port}/hook" \
+    WEBHOOK_URL="http://127.0.0.1/hook" \
     WEBHOOK_HEADER="$header" \
     WEBHOOK_KEY="$key" \
     RUNNER_TEMP="${tmp}/runner" \
     bash "$forward_sh" > "${tmp}/forward.out" 2> "${tmp}/forward.err"
   forward_status=$?
   set -e
-  kill "$server_pid" 2>/dev/null || true
-  wait "$server_pid" 2>/dev/null || true
 }
 
 mkdir -p "${tmp}/runner"
-ip link set lo up >/dev/null 2>&1 || true
 post_forward "Authorization: Bearer test-token" "" "issue_comment" "$event_file"
 if [[ "$forward_status" != "0" ]]; then
   fail "full Authorization line failed: $(cat "${tmp}/forward.err" "${tmp}/forward.out")"
 fi
-assert_contains "${tmp}/capture.json" "Bearer test-token"
+assert_contains "${tmp}/capture.txt" "Bearer test-token"
 assert_contains "${tmp}/forward.out" "webhook HTTP 204"
 if grep -q "test-token" "${tmp}/forward.out" "${tmp}/forward.err"; then
   fail "forward step printed the webhook response or the token"
@@ -368,12 +365,7 @@ post_forward "X-Webhook-Key" "k" "issue_comment" "$event_file"
 if [[ "$forward_status" != "0" ]]; then
   fail "name plus key failed: $(cat "${tmp}/forward.err" "${tmp}/forward.out")"
 fi
-python3 - "$tmp/capture.json" << 'PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-if doc["headers"].get("X-Webhook-Key") != "k":
-    raise SystemExit("header was not X-Webhook-Key: k")
-PY
+assert_contains "${tmp}/capture.txt" "X-Webhook-Key: k"
 
 set +e
 EVENT_NAME="issue_comment" \
@@ -455,15 +447,9 @@ canon_wf="$(git -C "$bare" show "mentions/my-bot-forward:.github/workflows/menti
 printf '%s\n' "$canon_wf" > "${tmp}/canon-wf.yml"
 assert_contains "${tmp}/canon-wf.yml" "github.actor == 'alice'"
 assert_contains "${tmp}/canon.out" "trigger_user: alice"
-python3 - "$canon_cfg" << 'PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-repos = doc.get("repos") or []
-if "example/mentions" not in repos or "other/repo" not in repos:
-    raise SystemExit("config did not merge repos: %r" % repos)
-if doc.get("trigger_user") != "alice":
-    raise SystemExit("config kept the uncanonical login")
-PY
+if ! jq -e '(.repos | index("example/mentions")) != null and (.repos | index("other/repo")) != null and .trigger_user == "alice"' "$canon_cfg" >/dev/null; then
+  fail "config did not merge repos or canonicalize the user: $(cat "$canon_cfg")"
+fi
 
 update_bare="${tmp}/update.git"
 update_work="${tmp}/update-seed"
