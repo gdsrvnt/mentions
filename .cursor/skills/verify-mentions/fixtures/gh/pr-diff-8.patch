@@ -1,7 +1,0 @@
-diff --git a/auth.sh b/auth.sh
---- a/auth.sh
-+++ b/auth.sh
-@@ -1 +1,2 @@
--token=$(lookup)
-+: "${token:=$(lookup)}"
-+export token
