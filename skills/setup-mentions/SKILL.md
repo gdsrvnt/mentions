@@ -68,11 +68,12 @@ Create a Grok Bot routine with a webhook trigger. Copy the webhook URL into the 
 
 Merge the workflow pull request when the user asks. Events run only from the default branch.
 
-After the merge, the smoke test has three cases.
+After the merge, the smoke test has four cases.
 
 1. The trigger user mentions the bot. The workflow runs and the routine receives the event.
 2. The bot mentions itself. The job is skipped.
 3. The trigger user comments without the mention. The job is skipped.
+4. Run the workflow by hand with `gh workflow run mention-forward.yml -R <owner>/<repo>`. The `sweep` job succeeds. Its log names the window it read.
 
 Read the run with `gh run view`. When `gh run view --log-failed` is empty, read the job log with `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs`. A 401 that says the API key is invalid means the header secret was split. Put the full Authorization line in the header secret.
 

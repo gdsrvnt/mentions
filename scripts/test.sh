@@ -112,6 +112,7 @@ assert_contains "$dry_out" "branch: mentions/my-bot-forward"
 assert_contains "$dry_out" "workflow_path: .github/workflows/mention-forward.yml"
 assert_contains "$dry_out" "dry-run: no network writes"
 assert_contains "$dry_out" "commit_comment"
+assert_contains "$dry_out" "A scheduled \`sweep\` job"
 assert_contains "$dry_out" "event_name"
 assert_contains "$dry_out" "payload"
 assert_not_contains "$dry_out" "__MENTIONS_"
@@ -135,6 +136,10 @@ assert_contains "$wf" "pull_request_review:"
 assert_contains "$wf" "pull_request_review_comment:"
 assert_contains "$wf" "discussion:"
 assert_contains "$wf" "discussion_comment:"
+assert_contains "$wf" "schedule:"
+assert_contains "$wf" "workflow_dispatch:"
+assert_contains "$wf" "pull-requests: read"
+assert_contains "$wf" "actions: read"
 assert_contains "$wf" "issues:"
 assert_contains "$wf" "commit_comment is not an Actions trigger"
 assert_contains "$wf" "types: [created, edited]"
@@ -720,5 +725,272 @@ if ! git -C "$sig_bare" show-ref --verify --quiet refs/heads/mentions/my-bot-for
   fail "branch was deleted after SIGTERM: $(cat "${tmp}/sig.err")"
 fi
 assert_contains "${tmp}/sig.err" "kept branch mentions/my-bot-forward"
+
+# The sweep forwards trigger-user reviews and review comments that got no run of
+# their own, as when the pull request has a merge conflict. The gh stub serves
+# tests/fixtures/sweep. The default window is after 04:47:00 through 04:57:00.
+sweep_fixtures="${root}/tests/fixtures/sweep"
+"$install" "octo-org/sandbox" --user octo-user --bot helper-bot --dry-run > "${tmp}/sweep-dry.out"
+sweep_wf="${tmp}/sweep-wf.yml"
+extract_between "${tmp}/sweep-dry.out" "===== RENDERED WORKFLOW =====" "===== END RENDERED WORKFLOW =====" "$sweep_wf"
+sweep_sh="${tmp}/sweep.sh"
+awk '
+  $0 ~ /# mentions-sweep-script/ {flag=1; next}
+  $0 ~ /# end mentions-sweep-script/ {flag=0; next}
+  flag { sub(/^          /, ""); print }
+' "$sweep_wf" > "$sweep_sh"
+if [[ ! -s "$sweep_sh" ]]; then
+  fail "sweep script was not extracted"
+fi
+assert_contains "$sweep_sh" 'trigger="octo-user"'
+assert_contains "$sweep_sh" 'handle="helper-bot"'
+assert_not_contains "$sweep_sh" "__MENTIONS_"
+
+sweep_bin="${tmp}/sweepbin"
+mkdir -p "$sweep_bin"
+cat > "${sweep_bin}/gh" << 'EOF'
+#!/usr/bin/env bash
+# Serves the sweep fixtures. --jq runs through jq, as gh would.
+set -euo pipefail
+dir="${MENTIONS_SWEEP_FIXTURES:?}"
+printf '%s\n' "$*" >> "${MENTIONS_SWEEP_CALLS:?}"
+if [[ "${1:-}" != "api" ]]; then
+  exit 1
+fi
+shift
+path=""
+filter=""
+open=0
+cursor=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --jq) filter="$2"; shift 2 ;;
+    --paginate) shift ;;
+    -f|-F)
+      case "$2" in
+        "states[]=OPEN") open=1 ;;
+        cursor=*) cursor="${2#cursor=}" ;;
+      esac
+      shift 2
+      ;;
+    *) path="$1"; shift ;;
+  esac
+done
+runs="repos/octo-org/sandbox/actions/workflows/mention-forward.yml/runs"
+case "$path" in
+  graphql)
+    if [[ "$open" -eq 1 ]]; then
+      file="prs-open.json"
+    elif [[ -n "$cursor" ]]; then
+      file="prs-recent-${cursor}.json"
+    else
+      file="prs-recent-1.json"
+    fi
+    ;;
+  repos/octo-org/sandbox/actions/runs/4242) file="run.json" ;;
+  "${runs}?event=schedule&status=success&per_page=20") file="previous-schedule.json" ;;
+  "${runs}?event=workflow_dispatch&status=success&per_page=20") file="previous-dispatch.json" ;;
+  "${runs}?per_page=100&created=%3E%3D"*) file="runs.json" ;;
+  *)
+    printf 'unexpected gh api %s\n' "$path" >&2
+    exit 1
+    ;;
+esac
+if [[ ! -f "${dir}/${file}" ]]; then
+  printf 'missing fixture %s\n' "$file" >&2
+  exit 1
+fi
+if [[ -n "$filter" ]]; then
+  jq -rc "$filter" "${dir}/${file}"
+else
+  cat "${dir}/${file}"
+fi
+EOF
+cat > "${sweep_bin}/curl" << 'EOF'
+#!/usr/bin/env bash
+# Keeps each posted body and header and answers MENTIONS_SWEEP_HTTP, 204 by default.
+set -euo pipefail
+bodies="${MENTIONS_SWEEP_BODIES:?}"
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -H) printf '%s\n' "$2" >> "${bodies}/headers.txt"; shift 2 ;;
+    -o) out="$2"; shift 2 ;;
+    --data-binary)
+      count="$(find "$bodies" -name 'body-*.json' | wc -l | tr -d ' ')"
+      cp "${2#@}" "${bodies}/body-$((count + 1)).json"
+      shift 2
+      ;;
+    -w|-X) shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "$out" ]]; then
+  printf '%s\n' "ok" > "$out"
+fi
+printf '%s' "${MENTIONS_SWEEP_HTTP:-204}"
+EOF
+chmod +x "${sweep_bin}/gh" "${sweep_bin}/curl"
+
+# run_sweep LABEL [VAR=value ...] runs the sweep with the defaults below,
+# overridden by the given assignments.
+run_sweep() {
+  local label="$1"
+  shift
+  sweep_dir="${tmp}/sweep-${label}"
+  mkdir -p "${sweep_dir}/bodies" "${sweep_dir}/runner"
+  : > "${sweep_dir}/calls.txt"
+  set +e
+  env PATH="${sweep_bin}:${PATH}" \
+    MENTIONS_SWEEP_FIXTURES="$sweep_fixtures" \
+    MENTIONS_SWEEP_CALLS="${sweep_dir}/calls.txt" \
+    MENTIONS_SWEEP_BODIES="${sweep_dir}/bodies" \
+    GITHUB_REPOSITORY="octo-org/sandbox" \
+    GITHUB_RUN_ID="4242" \
+    GITHUB_WORKFLOW_REF="octo-org/sandbox/.github/workflows/mention-forward.yml@refs/heads/main" \
+    GITHUB_SERVER_URL="https://github.com" \
+    RUNNER_TEMP="${sweep_dir}/runner" \
+    SWEEP_SINCE="" \
+    WEBHOOK_URL="http://127.0.0.1/hook" \
+    WEBHOOK_HEADER="Authorization: Bearer sweep-token" \
+    WEBHOOK_KEY="" \
+    "$@" \
+    bash "$sweep_sh" > "${sweep_dir}/out.txt" 2> "${sweep_dir}/err.txt"
+  sweep_status=$?
+  set -e
+}
+
+sweep_bodies() {
+  find "${sweep_dir}/bodies" -name 'body-*.json' | wc -l | tr -d ' '
+}
+
+run_sweep default
+if [[ "$sweep_status" -ne 0 ]]; then
+  fail "sweep failed: $(cat "${sweep_dir}/err.txt" "${sweep_dir}/out.txt")"
+fi
+assert_contains "${sweep_dir}/out.txt" "Sweeping reviews by octo-user after 2026-10-14T04:47:00Z through 2026-10-14T04:57:00Z"
+assert_contains "${sweep_dir}/out.txt" "Run 5001 already handled https://github.com/octo-org/sandbox/pull/8#pullrequestreview-9009"
+assert_contains "${sweep_dir}/out.txt" "Run 5002 already handled https://github.com/octo-org/sandbox/pull/8#discussion_r5504"
+assert_contains "${sweep_dir}/calls.txt" "states[]=OPEN"
+assert_contains "${sweep_dir}/calls.txt" "author=octo-user"
+assert_contains "${sweep_dir}/calls.txt" "cursor=2"
+assert_not_contains "${sweep_dir}/calls.txt" "cursor=3"
+assert_contains "${sweep_dir}/bodies/headers.txt" "Authorization: Bearer sweep-token"
+if grep -q "sweep-token" "${sweep_dir}/out.txt" "${sweep_dir}/err.txt"; then
+  fail "sweep printed the token"
+fi
+# expected-forward.json is what the router tests accept.
+jq -s -S '.' "${sweep_dir}"/bodies/body-*.json > "${sweep_dir}/forwarded.json"
+jq -S '.' "${sweep_fixtures}/expected-forward.json" > "${sweep_dir}/expected.json"
+if ! cmp -s "${sweep_dir}/expected.json" "${sweep_dir}/forwarded.json"; then
+  fail "sweep forwarded other bodies: $(diff "${sweep_dir}/expected.json" "${sweep_dir}/forwarded.json")"
+fi
+
+# With no earlier successful sweep, the window reaches back 15 minutes.
+first_fixtures="${tmp}/sweep-first-fixtures"
+cp -R "$sweep_fixtures" "$first_fixtures"
+printf '%s\n' '{"total_count":0,"workflow_runs":[]}' > "${first_fixtures}/previous-schedule.json"
+printf '%s\n' '{"total_count":0,"workflow_runs":[]}' > "${first_fixtures}/previous-dispatch.json"
+run_sweep first MENTIONS_SWEEP_FIXTURES="$first_fixtures"
+if [[ "$sweep_status" -ne 0 ]]; then
+  fail "first sweep failed: $(cat "${sweep_dir}/err.txt" "${sweep_dir}/out.txt")"
+fi
+assert_contains "${sweep_dir}/out.txt" "after 2026-10-14T04:42:00Z through 2026-10-14T04:57:00Z"
+assert_contains "${sweep_dir}/out.txt" "Forwarded https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9005"
+
+# A sweep that last succeeded days ago reaches back one day at most.
+old_fixtures="${tmp}/sweep-old-fixtures"
+cp -R "$sweep_fixtures" "$old_fixtures"
+printf '%s\n' '{"total_count":1,"workflow_runs":[{"id":4100,"event":"schedule","run_started_at":"2026-10-10T00:00:00Z"}]}' > "${old_fixtures}/previous-schedule.json"
+printf '%s\n' '{"total_count":0,"workflow_runs":[]}' > "${old_fixtures}/previous-dispatch.json"
+# The longer window still covers page 2's oldest pull request, so the sweep reads page 3.
+printf '%s\n' '{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}' > "${old_fixtures}/prs-recent-3.json"
+run_sweep old MENTIONS_SWEEP_FIXTURES="$old_fixtures"
+if [[ "$sweep_status" -ne 0 ]]; then
+  fail "old sweep failed: $(cat "${sweep_dir}/err.txt" "${sweep_dir}/out.txt")"
+fi
+assert_contains "${sweep_dir}/out.txt" "after 2026-10-13T04:57:00Z through 2026-10-14T04:57:00Z"
+assert_contains "${sweep_dir}/calls.txt" "cursor=3"
+
+# A manual since reaches further back than the last successful sweep.
+run_sweep manual SWEEP_SINCE="2026-10-14T04:42:00Z"
+if [[ "$sweep_status" -ne 0 ]]; then
+  fail "manual sweep failed: $(cat "${sweep_dir}/err.txt" "${sweep_dir}/out.txt")"
+fi
+assert_contains "${sweep_dir}/out.txt" "after 2026-10-14T04:42:00Z through 2026-10-14T04:57:00Z"
+assert_contains "${sweep_dir}/out.txt" "Forwarded https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9005"
+
+# A manual since after the last successful sweep does not move the window forward.
+run_sweep latesince SWEEP_SINCE="2026-10-14T04:56:00Z"
+if [[ "$sweep_status" -ne 0 ]]; then
+  fail "late manual sweep failed: $(cat "${sweep_dir}/err.txt" "${sweep_dir}/out.txt")"
+fi
+assert_contains "${sweep_dir}/out.txt" "after 2026-10-14T04:47:00Z through 2026-10-14T04:57:00Z"
+if [[ "$(sweep_bodies)" != "4" ]]; then
+  fail "a late manual since skipped reviews"
+fi
+
+# An empty window needs no secrets.
+empty_fixtures="${tmp}/sweep-empty-fixtures"
+cp -R "$sweep_fixtures" "$empty_fixtures"
+printf '%s\n' '{"total_count":1,"workflow_runs":[{"id":4241,"event":"schedule","run_started_at":"2026-10-14T04:59:30Z"}]}' > "${empty_fixtures}/previous-schedule.json"
+run_sweep empty MENTIONS_SWEEP_FIXTURES="$empty_fixtures" WEBHOOK_URL="" WEBHOOK_HEADER=""
+if [[ "$sweep_status" -ne 0 ]]; then
+  fail "an empty window should exit 0: $(cat "${sweep_dir}/err.txt" "${sweep_dir}/out.txt")"
+fi
+assert_contains "${sweep_dir}/out.txt" "after 2026-10-14T04:56:30Z through 2026-10-14T04:57:00Z"
+assert_contains "${sweep_dir}/out.txt" "No review mentions in the window"
+
+run_sweep badsince SWEEP_SINCE="yesterday"
+if [[ "$sweep_status" -eq 0 ]]; then
+  fail "a malformed since should fail"
+fi
+assert_contains "${sweep_dir}/out.txt" "since must be a UTC time"
+if [[ -s "${sweep_dir}/calls.txt" ]]; then
+  fail "a malformed since reached the API"
+fi
+
+# Runs for every candidate mean the event path delivered them all.
+covered_fixtures="${tmp}/sweep-covered-fixtures"
+cp -R "$sweep_fixtures" "$covered_fixtures"
+jq '.workflow_runs += [
+  {id: 6001, event: "pull_request_review", head_branch: "feature/conflict", created_at: "2026-10-14T04:50:02Z"},
+  {id: 6002, event: "pull_request_review_comment", head_branch: "feature/conflict", created_at: "2026-10-14T04:50:03Z"},
+  {id: 6003, event: "pull_request_review", head_branch: "feature/conflict", created_at: "2026-10-14T04:52:01Z"},
+  {id: 6004, event: "pull_request_review", head_branch: "feature/closed", created_at: "2026-10-14T04:54:02Z"}
+]' "${sweep_fixtures}/runs.json" > "${covered_fixtures}/runs.json"
+run_sweep covered MENTIONS_SWEEP_FIXTURES="$covered_fixtures" WEBHOOK_URL="" WEBHOOK_HEADER=""
+if [[ "$sweep_status" -ne 0 ]]; then
+  fail "a fully covered window should exit 0: $(cat "${sweep_dir}/err.txt" "${sweep_dir}/out.txt")"
+fi
+assert_contains "${sweep_dir}/out.txt" "Every review mention in the window had its own run"
+if [[ "$(sweep_bodies)" != "0" ]]; then
+  fail "a fully covered window posted a body"
+fi
+
+run_sweep nosecret WEBHOOK_URL="" WEBHOOK_HEADER=""
+if [[ "$sweep_status" -eq 0 ]]; then
+  fail "a sweep with bodies to post and no secrets should fail"
+fi
+assert_contains "${sweep_dir}/out.txt" "MENTION_WEBHOOK_URL and MENTION_WEBHOOK_HEADER must be set"
+if [[ "$(sweep_bodies)" != "0" ]]; then
+  fail "the sweep posted without secrets"
+fi
+
+run_sweep namekey WEBHOOK_HEADER="X-Webhook-Key" WEBHOOK_KEY="k"
+if [[ "$sweep_status" -ne 0 ]]; then
+  fail "name plus key sweep failed: $(cat "${sweep_dir}/err.txt" "${sweep_dir}/out.txt")"
+fi
+assert_contains "${sweep_dir}/bodies/headers.txt" "X-Webhook-Key: k"
+
+# A failed post fails the run after it tries the rest.
+run_sweep http500 MENTIONS_SWEEP_HTTP=500
+if [[ "$sweep_status" -eq 0 ]]; then
+  fail "a webhook 500 should fail the sweep"
+fi
+if [[ "$(sweep_bodies)" != "4" ]]; then
+  fail "the sweep stopped at the first failed post"
+fi
+assert_contains "${sweep_dir}/out.txt" "::error::webhook returned HTTP 500 for https://github.com/octo-org/sandbox/pull/10#pullrequestreview-9011"
 
 printf '%s\n' "ok"

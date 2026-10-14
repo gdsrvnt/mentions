@@ -19,6 +19,8 @@ sequenceDiagram
   Agent->>GitHub: progress and final reply
 ```
 
+Reviews and review comments run from the pull request's merge ref, and GitHub creates no run for them while the pull request has a merge conflict. The workflow's `sweep` job runs on a schedule from the default branch. It reads the trigger user's reviews and review comments through the GraphQL API and posts the same `{event_name, payload}` for each one that mentions the bot and has no run of its own. Consecutive sweeps cover adjacent windows, so a review is posted once. The handler fetches it the same way either path delivers it.
+
 `scripts/thread-state.mjs` claims one thread under a lock, writes the request to an immutable file, and records the seen entry only after dispatch succeeds. The thread key is a hash of owner, repo, kind, and number. The seen path hashes the node id and the revision. The work directory includes the owner and the repo.
 
 The installer is `scripts/install.sh`. It renders `templates/mention-forward.yml`, opens a pull request, and merges the repository into the handler config. The routine prompt it prints is `templates/routine-prompt.md`.

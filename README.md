@@ -29,6 +29,8 @@ A workflow in the target repository posts `{event_name, payload}` to the Grok Bo
 
 A review request has no text. The workflow forwards `pull_request_target` with action `review_requested` when the trigger user requests the bot as a reviewer. A team request does not count. The router then reads the pull request's review-request timeline from GitHub and accepts the newest request from the trigger user for the bot. Requesting the review again is a new delivery. The agent reviews the pull request and replies on it.
 
+Reviews and inline review comments run from the pull request's merge ref. While the pull request has a merge conflict, GitHub creates no run for them at all. The same happens when the merge ref's copy of the workflow is missing or broken. The workflow's `sweep` job closes that gap. It runs from the default branch, with its secrets, at minutes 3, 13, 23, 33, 43, and 53 of each hour and on manual dispatch. It reads the trigger user's reviews and review comments on open pull requests and on pull requests updated since the last successful sweep. Each one that mentions the bot and has no run of its own is posted as the same `{event_name, payload}` a run would send. A review is swept 3 to 15 minutes after it is posted, later if GitHub delays the schedule. Fork pull requests are skipped, as on the event path.
+
 `skills/setup-mentions/SKILL.md` is the installer entry point. It runs `scripts/install.sh`.
 
 ## Requirements
@@ -38,7 +40,7 @@ A review request has no text. The workflow forwards `pull_request_target` with a
 | Grok Bot | 0.49.0 | Webhook routines and secret cards. Cursor and Grok Bot can install the plugin; the webhook routine runs in Grok Bot. |
 | herdr | 0.9.3 | Launches the reply agent. Install from `https://herdr.dev` and put `herdr` on `PATH`. |
 | git | any current | Clones the target repository during install. |
-| gh | any current | Opens the workflow pull request and calls the GitHub API. |
+| gh | any current | Opens the workflow pull request and calls the GitHub API. The sweep job reads reviews with it. |
 | jq | any current | The workflow builds the POST body. The installer merges config. |
 | curl | any current | The workflow posts the event. |
 | node | 22 | Runs `scripts/route-event.mjs` and `scripts/validate-plugin.mjs`. |
@@ -164,6 +166,8 @@ The full event payload is sent to the webhook, including content from private re
 
 Fork pull request reviews are not forwarded. Actions does not provide secrets for those events, and the job exits 0 with a notice.
 
+The sweep job reads GitHub with the workflow token, limited to `actions: read`, `contents: read`, and `pull-requests: read`. It does not check out code. It posts only the trigger user's own reviews and review comments, and an edit counts only when the trigger user made it. On a private repository each sweep bills at least one Actions minute, about 4,300 minutes a month at six runs an hour. Edit the `cron` line to sweep less often.
+
 `commit_comment` is not an Actions trigger. actionlint rejects a workflow that subscribes to it.
 
 Details and a reporting address are in [SECURITY.md](SECURITY.md). The flow is drawn again in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -177,6 +181,8 @@ A 401 that says the API key is invalid means the header secret was split into a 
 A skipped job means the actor was not the trigger user, or the text did not contain the handle. For a review request, it means the requested reviewer was not the bot. Actions `==` and `contains()` ignore case. The shell step then requires a mention boundary, or for a review request the bot's login.
 
 Fork reviews exit 0 with a notice. They are not delivered.
+
+A review or review comment on a pull request with a merge conflict has no run. The next sweep forwards it. The sweep log names each review it forwarded and each one that an earlier run already handled. A sweep counts a run of the same event on the same branch, started within two minutes of the review, as that review's run. To post a range again, run the workflow by hand with `since` set to a UTC time, for example `gh workflow run mention-forward.yml -f since=2026-10-14T04:00:00Z`. `since` only reaches further back. A time after the last successful sweep changes nothing. The handler drops a review it has already seen. A failed post fails the sweep, and the next sweep retries the same window.
 
 A silent drop is a handler decision. The reason is appended to `state_dir/dropped.log`.
 

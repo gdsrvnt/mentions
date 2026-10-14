@@ -14,6 +14,8 @@ The POST body is the full event. Private repository content in that event leaves
 
 Fork pull request reviews and review comments are not forwarded. `commit_comment` is not an Actions trigger.
 
+The scheduled sweep job has the Actions secrets and a workflow token limited to `actions: read`, `contents: read`, and `pull-requests: read`. It reads reviews through the API and never checks out or runs repository code. It posts only reviews and review comments that the trigger user wrote, and an edit only when the trigger user made it, so it adds no new sender to the handler.
+
 This repository has no X, Twitter, intake. Mentions here are GitHub mentions.
 
 ## Reporting

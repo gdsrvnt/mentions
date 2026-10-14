@@ -33,6 +33,17 @@ on:
     types: [created, edited]
   discussion_comment:
     types: [created, edited]
+  # pull_request_review and pull_request_review_comment run from the pull
+  # request's merge ref. GitHub creates no run at all while the pull request has
+  # a merge conflict, so the sweep job below forwards those reviews instead.
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Also sweep reviews after this UTC time, like 2026-10-14T04:00:00Z. The sweep always covers the time since the last successful sweep."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -123,3 +134,246 @@ jobs:
           esac
           echo "webhook HTTP ${http_code}"
           # end mentions-forward-script
+
+  sweep:
+    # Forwards trigger-user reviews and review comments that mention the bot and
+    # got no run of their own. Scheduled and manual runs use the default branch
+    # workflow and its secrets. This job reads GitHub only and never checks out code.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    concurrency:
+      group: mention-sweep-${{ github.workflow }}
+      cancel-in-progress: false
+    steps:
+      - name: Forward reviews that got no run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SWEEP_SINCE: ${{ inputs.since }}
+          WEBHOOK_URL: ${{ secrets.__MENTIONS_SECRET_URL__ }}
+          WEBHOOK_KEY: ${{ secrets.__MENTIONS_SECRET_KEY__ }}
+          WEBHOOK_HEADER: ${{ secrets.__MENTIONS_SECRET_HEADER__ }}
+        run: |
+          # mentions-sweep-script
+          set -euo pipefail
+          trigger="__MENTIONS_TRIGGER_USER__"
+          handle="__MENTIONS_BOT_HANDLE__"
+          # A review must be this many seconds old before a sweep reads it, so its own run has started.
+          settle=180
+          first_lookback=900
+          max_lookback=86400
+          repo="$GITHUB_REPOSITORY"
+          owner="${repo%%/*}"
+          name="${repo#*/}"
+          workflow="${GITHUB_WORKFLOW_REF%@*}"
+          workflow="${workflow##*/}"
+          work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/mentions-sweep"
+          mkdir -p "$work"
+          shift_time() {
+            jq -rn --arg t "$1" --argjson d "$2" '($t | fromdateiso8601) + $d | todateiso8601'
+          }
+
+          # The window is (since, until]. It starts where the last successful sweep stopped.
+          # A manual since can reach further back, never forward, so it cannot skip a review.
+          if [ -n "${SWEEP_SINCE:-}" ] && ! printf '%s' "$SWEEP_SINCE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+            echo "::error::since must be a UTC time like 2026-10-14T04:00:00Z"
+            exit 1
+          fi
+          started="$(gh api "repos/${repo}/actions/runs/${GITHUB_RUN_ID}" --jq '.run_started_at')"
+          until="$(shift_time "$started" "-${settle}")"
+          : > "${work}/previous.txt"
+          for event in schedule workflow_dispatch; do
+            gh api "repos/${repo}/actions/workflows/${workflow}/runs?event=${event}&status=success&per_page=20" \
+              --jq '.workflow_runs[] | "\(.id) \(.run_started_at)"' >> "${work}/previous.txt"
+          done
+          previous="$(awk -v id="$GITHUB_RUN_ID" -v t="$started" '$1 != id && $2 < t { print $2 }' "${work}/previous.txt" | LC_ALL=C sort | tail -n 1)"
+          if [ -n "$previous" ]; then
+            since="$(shift_time "$previous" "-${settle}")"
+          else
+            since="$(shift_time "$until" "-${first_lookback}")"
+          fi
+          floor="$(shift_time "$until" "-${max_lookback}")"
+          since="$(jq -rn --arg a "$since" --arg b "$floor" --arg manual "${SWEEP_SINCE:-}" '
+            (if $a < $b then $b else $a end) as $auto
+            | if $manual != "" and $manual < $auto then $manual else $auto end')"
+          echo "Sweeping reviews by ${trigger} after ${since} through ${until}"
+
+          # shellcheck disable=SC2016 # GraphQL variables, not shell expansions.
+          query='query($owner: String!, $name: String!, $author: String!, $states: [PullRequestState!], $count: Int!, $cursor: String) {
+            repository(owner: $owner, name: $name) {
+              pullRequests(first: $count, after: $cursor, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                pageInfo { hasNextPage endCursor }
+                nodes {
+                  number url title updatedAt isCrossRepository headRefName headRefOid baseRefName
+                  headRepository { nameWithOwner isFork }
+                  reviews(last: 30, author: $author) {
+                    nodes {
+                      id databaseId body url state submittedAt lastEditedAt
+                      author { login } editor { login } commit { oid }
+                      comments(first: 50) {
+                        nodes { id databaseId body url path createdAt publishedAt updatedAt lastEditedAt author { login } editor { login } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+          # Open pull requests catch edits. An edit does not move a pull request's updatedAt.
+          gh api graphql -f query="$query" -f owner="$owner" -f name="$name" -f author="$trigger" \
+            -f 'states[]=OPEN' -F count=50 > "${work}/prs-open.json"
+          # Pull requests updated in the window, in any state, catch new reviews.
+          cursor=""
+          page=0
+          while :; do
+            page=$((page + 1))
+            args=(-f query="$query" -f owner="$owner" -f name="$name" -f author="$trigger" -F count=25)
+            if [ -n "$cursor" ]; then
+              args+=(-f cursor="$cursor")
+            fi
+            gh api graphql "${args[@]}" > "${work}/prs-recent-${page}.json"
+            cursor="$(jq -r --arg since "$since" '.data.repository.pullRequests
+              | if .pageInfo.hasNextPage and (((.nodes | last | .updatedAt) // "") >= $since) then .pageInfo.endCursor else "" end' \
+              "${work}/prs-recent-${page}.json")"
+            if [ -z "$cursor" ] || [ "$page" -ge 20 ]; then
+              break
+            fi
+          done
+
+          # One webhook body per review or review comment that the trigger user wrote or
+          # last edited inside the window and that mentions the bot. Fork pull requests
+          # are skipped, as on the event path.
+          jq -s -c \
+            --arg trigger "$trigger" --arg handle "$handle" --arg since "$since" --arg until "$until" \
+            --arg repo "$repo" --arg owner "$owner" --arg name "$name" \
+            --arg server "${GITHUB_SERVER_URL:-https://github.com}" '
+            def same($login): (. // "" | ascii_downcase) == ($login | ascii_downcase);
+            def mentions: test("(^|[^A-Za-z0-9_-])@" + $handle + "([^A-Za-z0-9_-]|$)"; "i");
+            def revision($published):
+              if .lastEditedAt != null and .lastEditedAt > $published
+              then {edited: true, at: .lastEditedAt, sender: .editor.login}
+              else {edited: false, at: $published, sender: .author.login}
+              end;
+            [.[].data.repository.pullRequests.nodes[]] | unique_by(.number) | .[]
+            | select(.isCrossRepository | not)
+            | . as $pr
+            | {
+                number: .number,
+                html_url: .url,
+                title: .title,
+                head: {ref: .headRefName, sha: .headRefOid, repo: {full_name: .headRepository.nameWithOwner, fork: (.headRepository.isFork // false)}},
+                base: {ref: .baseRefName, repo: {full_name: $repo}}
+              } as $pull
+            | {full_name: $repo, name: $name, owner: {login: $owner}, html_url: ($server + "/" + $repo)} as $repository
+            | .reviews.nodes[]
+            | select(.author.login | same($trigger))
+            | select(.state != "PENDING" and .submittedAt != null)
+            | . as $review
+            | (
+                revision(.submittedAt) as $rev
+                | select(.body // "" | mentions)
+                | {
+                    at: $rev.at, branch: $pr.headRefName, sender: $rev.sender, url: .url,
+                    body: {
+                      event_name: "pull_request_review",
+                      payload: {
+                        action: (if $rev.edited then "edited" else "submitted" end),
+                        review: {
+                          id: .databaseId, node_id: .id, body: .body, html_url: .url, state: (.state | ascii_downcase),
+                          submitted_at: .submittedAt, commit_id: .commit.oid, user: {login: .author.login}
+                        },
+                        pull_request: $pull, repository: $repository, sender: {login: $rev.sender}
+                      }
+                    }
+                  }
+              ),
+              (
+                .comments.nodes[]
+                | select(.author.login | same($trigger))
+                | revision(.publishedAt // .createdAt) as $rev
+                | select(.body // "" | mentions)
+                | {
+                    at: $rev.at, branch: $pr.headRefName, sender: $rev.sender, url: .url,
+                    body: {
+                      event_name: "pull_request_review_comment",
+                      payload: {
+                        action: (if $rev.edited then "edited" else "created" end),
+                        comment: {
+                          id: .databaseId, node_id: .id, body: .body, html_url: .url, path: .path,
+                          pull_request_review_id: $review.databaseId, created_at: .createdAt, updated_at: .updatedAt,
+                          user: {login: .author.login}
+                        },
+                        pull_request: $pull, repository: $repository, sender: {login: $rev.sender}
+                      }
+                    }
+                  }
+              )
+            | select(.at > $since and .at <= $until)
+            | select(.sender | same($trigger))
+          ' "${work}"/prs-*.json > "${work}/candidates.ndjson"
+          if [ ! -s "${work}/candidates.ndjson" ]; then
+            echo "No review mentions in the window"
+            exit 0
+          fi
+
+          # A run of the same event on the same branch that started within two minutes
+          # of the review means the event path already handled it.
+          runs_since="$(shift_time "$since" -5)"
+          gh api --paginate "repos/${repo}/actions/workflows/${workflow}/runs?per_page=100&created=%3E%3D${runs_since}" \
+            --jq '.workflow_runs[] | select(.event == "pull_request_review" or .event == "pull_request_review_comment") | {id, event, head_branch, created_at}' \
+            > "${work}/runs.ndjson"
+          jq -n -c --slurpfile runs "${work}/runs.ndjson" '
+            inputs
+            | . as $c
+            | ($c.at | fromdateiso8601) as $t
+            | ([$runs[] | select(.event == $c.body.event_name and .head_branch == $c.branch)
+                | select(((.created_at | fromdateiso8601) - $t) as $d | $d >= -5 and $d <= 120)] | first | .id) as $run
+            | if $run then {skip: $run, url: $c.url} else {forward: $c.body, url: $c.url} end
+          ' "${work}/candidates.ndjson" > "${work}/plan.ndjson"
+          jq -r 'select(.skip) | "Run \(.skip) already handled \(.url)"' "${work}/plan.ndjson"
+          jq -c 'select(.forward) | .forward' "${work}/plan.ndjson" > "${work}/forward.ndjson"
+          if [ ! -s "${work}/forward.ndjson" ]; then
+            echo "Every review mention in the window had its own run"
+            exit 0
+          fi
+
+          if [ -z "${WEBHOOK_URL:-}" ] || [ -z "${WEBHOOK_HEADER:-}" ]; then
+            echo "::error::__MENTIONS_SECRET_URL__ and __MENTIONS_SECRET_HEADER__ must be set"
+            exit 1
+          fi
+          case "$WEBHOOK_HEADER" in
+            *:*) auth_header="$WEBHOOK_HEADER" ;;
+            *)
+              if [ -z "${WEBHOOK_KEY:-}" ]; then
+                echo "::error::__MENTIONS_SECRET_KEY__ must be set when __MENTIONS_SECRET_HEADER__ is only a header name"
+                exit 1
+              fi
+              auth_header="${WEBHOOK_HEADER}: ${WEBHOOK_KEY}" ;;
+          esac
+          # A failed post fails the run. The next sweep then starts from the last successful one.
+          failed=0
+          count=0
+          while IFS= read -r body; do
+            count=$((count + 1))
+            printf '%s\n' "$body" > "${work}/body-${count}.json"
+          done < "${work}/forward.ndjson"
+          for i in $(seq 1 "$count"); do
+            url="$(jq -r '.payload.review.html_url // .payload.comment.html_url' "${work}/body-${i}.json")"
+            http_code="$(curl -sS -o "${work}/webhook-response.txt" -w '%{http_code}' -X POST "$WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -H "$auth_header" \
+              --data-binary "@${work}/body-${i}.json")" || http_code="000"
+            case "$http_code" in
+              2[0-9][0-9]) echo "Forwarded ${url}: webhook HTTP ${http_code}" ;;
+              *)
+                echo "::error::webhook returned HTTP ${http_code} for ${url}"
+                failed=1
+                ;;
+            esac
+          done
+          exit "$failed"
+          # end mentions-sweep-script
