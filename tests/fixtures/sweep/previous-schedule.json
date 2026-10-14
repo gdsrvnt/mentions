@@ -1,0 +1,29 @@
+{
+  "total_count": 3,
+  "workflow_runs": [
+    {
+      "id": 4250,
+      "event": "schedule",
+      "status": "completed",
+      "conclusion": "success",
+      "run_started_at": "2026-10-14T05:10:00Z",
+      "created_at": "2026-10-14T05:10:00Z"
+    },
+    {
+      "id": 4242,
+      "event": "schedule",
+      "status": "completed",
+      "conclusion": "success",
+      "run_started_at": "2026-10-14T05:00:00Z",
+      "created_at": "2026-10-14T05:00:00Z"
+    },
+    {
+      "id": 4241,
+      "event": "schedule",
+      "status": "completed",
+      "conclusion": "success",
+      "run_started_at": "2026-10-14T04:50:00Z",
+      "created_at": "2026-10-14T04:50:00Z"
+    }
+  ]
+}

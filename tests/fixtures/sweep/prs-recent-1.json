@@ -1,0 +1,309 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": true,
+          "endCursor": "2"
+        },
+        "nodes": [
+          {
+            "number": 7,
+            "url": "https://github.com/octo-org/sandbox/pull/7",
+            "title": "Pull 7",
+            "updatedAt": "2026-10-14T04:55:00Z",
+            "isCrossRepository": false,
+            "headRefName": "feature/conflict",
+            "headRefOid": "7777777777777777777777777777777777777777",
+            "baseRefName": "main",
+            "headRepository": {
+              "nameWithOwner": "octo-org/sandbox",
+              "isFork": false
+            },
+            "reviews": {
+              "nodes": [
+                {
+                  "id": "PRR_9001",
+                  "databaseId": 9001,
+                  "body": "@helper-bot the loop never exits",
+                  "url": "https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9001",
+                  "state": "CHANGES_REQUESTED",
+                  "submittedAt": "2026-10-14T04:50:00Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "7777777777777777777777777777777777777777"
+                  },
+                  "comments": {
+                    "nodes": [
+                      {
+                        "id": "PRRC_5501",
+                        "databaseId": 5501,
+                        "body": "@helper-bot this line drops the error",
+                        "url": "https://github.com/octo-org/sandbox/pull/7#discussion_r5501",
+                        "path": "src/loop.js",
+                        "createdAt": "2026-10-14T04:30:00Z",
+                        "publishedAt": "2026-10-14T04:50:00Z",
+                        "updatedAt": "2026-10-14T04:50:00Z",
+                        "lastEditedAt": null,
+                        "author": {
+                          "login": "octo-user"
+                        },
+                        "editor": null
+                      },
+                      {
+                        "id": "PRRC_5502",
+                        "databaseId": 5502,
+                        "body": "no mention here",
+                        "url": "https://github.com/octo-org/sandbox/pull/7#discussion_r5502",
+                        "path": "src/loop.js",
+                        "createdAt": "2026-10-14T04:50:00Z",
+                        "publishedAt": "2026-10-14T04:50:00Z",
+                        "updatedAt": "2026-10-14T04:50:00Z",
+                        "lastEditedAt": null,
+                        "author": {
+                          "login": "octo-user"
+                        },
+                        "editor": null
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "PRR_9002",
+                  "databaseId": 9002,
+                  "body": "@helper-bot I added the mention in an edit",
+                  "url": "https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9002",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:40:00Z",
+                  "lastEditedAt": "2026-10-14T04:52:00Z",
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": {
+                    "login": "octo-user"
+                  },
+                  "commit": {
+                    "oid": "7777777777777777777777777777777777777777"
+                  },
+                  "comments": {
+                    "nodes": []
+                  }
+                },
+                {
+                  "id": "PRR_9003",
+                  "databaseId": 9003,
+                  "body": "ask @helper-bot2 instead",
+                  "url": "https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9003",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:55:00Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "7777777777777777777777777777777777777777"
+                  },
+                  "comments": {
+                    "nodes": []
+                  }
+                },
+                {
+                  "id": "PRR_9004",
+                  "databaseId": 9004,
+                  "body": "@helper-bot still settling",
+                  "url": "https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9004",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:58:30Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "7777777777777777777777777777777777777777"
+                  },
+                  "comments": {
+                    "nodes": []
+                  }
+                },
+                {
+                  "id": "PRR_9005",
+                  "databaseId": 9005,
+                  "body": "@helper-bot before the window",
+                  "url": "https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9005",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:46:00Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "7777777777777777777777777777777777777777"
+                  },
+                  "comments": {
+                    "nodes": []
+                  }
+                },
+                {
+                  "id": "PRR_9006",
+                  "databaseId": 9006,
+                  "body": "",
+                  "url": "https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9006",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:41:00Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "7777777777777777777777777777777777777777"
+                  },
+                  "comments": {
+                    "nodes": [
+                      {
+                        "id": "PRRC_5503",
+                        "databaseId": 5503,
+                        "body": "@helper-bot someone else edited this",
+                        "url": "https://github.com/octo-org/sandbox/pull/7#discussion_r5503",
+                        "path": "src/loop.js",
+                        "createdAt": "2026-10-14T04:41:00Z",
+                        "publishedAt": "2026-10-14T04:41:00Z",
+                        "updatedAt": "2026-10-14T04:53:00Z",
+                        "lastEditedAt": "2026-10-14T04:53:00Z",
+                        "author": {
+                          "login": "octo-user"
+                        },
+                        "editor": {
+                          "login": "someone-else"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "PRR_9007",
+                  "databaseId": 9007,
+                  "body": "@helper-bot pending",
+                  "url": "https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9007",
+                  "state": "PENDING",
+                  "submittedAt": null,
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "7777777777777777777777777777777777777777"
+                  },
+                  "comments": {
+                    "nodes": []
+                  }
+                },
+                {
+                  "id": "PRR_9008",
+                  "databaseId": 9008,
+                  "body": "@helper-bot from another reviewer",
+                  "url": "https://github.com/octo-org/sandbox/pull/7#pullrequestreview-9008",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:51:00Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "someone-else"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "7777777777777777777777777777777777777777"
+                  },
+                  "comments": {
+                    "nodes": []
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 9,
+            "url": "https://github.com/octo-org/sandbox/pull/9",
+            "title": "Pull 9",
+            "updatedAt": "2026-10-14T04:52:00Z",
+            "isCrossRepository": true,
+            "headRefName": "patch-1",
+            "headRefOid": "9999999999999999999999999999999999999999",
+            "baseRefName": "main",
+            "headRepository": {
+              "nameWithOwner": "mallory/sandbox",
+              "isFork": true
+            },
+            "reviews": {
+              "nodes": [
+                {
+                  "id": "PRR_9010",
+                  "databaseId": 9010,
+                  "body": "@helper-bot fork review",
+                  "url": "https://github.com/octo-org/sandbox/pull/9#pullrequestreview-9010",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:52:00Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "9999999999999999999999999999999999999999"
+                  },
+                  "comments": {
+                    "nodes": []
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 10,
+            "url": "https://github.com/octo-org/sandbox/pull/10",
+            "title": "Pull 10",
+            "updatedAt": "2026-10-14T04:54:00Z",
+            "isCrossRepository": false,
+            "headRefName": "feature/closed",
+            "headRefOid": "1010101010101010101010101010101010101010",
+            "baseRefName": "main",
+            "headRepository": {
+              "nameWithOwner": "octo-org/sandbox",
+              "isFork": false
+            },
+            "reviews": {
+              "nodes": [
+                {
+                  "id": "PRR_9011",
+                  "databaseId": 9011,
+                  "body": "@helper-bot follow up after the merge",
+                  "url": "https://github.com/octo-org/sandbox/pull/10#pullrequestreview-9011",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:54:00Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "1010101010101010101010101010101010101010"
+                  },
+                  "comments": {
+                    "nodes": []
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

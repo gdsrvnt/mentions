@@ -1,0 +1,84 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": true,
+          "endCursor": "3"
+        },
+        "nodes": [
+          {
+            "number": 8,
+            "url": "https://github.com/octo-org/sandbox/pull/8",
+            "title": "Pull 8",
+            "updatedAt": "2026-10-14T04:51:00Z",
+            "isCrossRepository": false,
+            "headRefName": "feature/clean",
+            "headRefOid": "8888888888888888888888888888888888888888",
+            "baseRefName": "main",
+            "headRepository": {
+              "nameWithOwner": "octo-org/sandbox",
+              "isFork": false
+            },
+            "reviews": {
+              "nodes": [
+                {
+                  "id": "PRR_9009",
+                  "databaseId": 9009,
+                  "body": "@helper-bot looks off",
+                  "url": "https://github.com/octo-org/sandbox/pull/8#pullrequestreview-9009",
+                  "state": "COMMENTED",
+                  "submittedAt": "2026-10-14T04:51:00Z",
+                  "lastEditedAt": null,
+                  "author": {
+                    "login": "octo-user"
+                  },
+                  "editor": null,
+                  "commit": {
+                    "oid": "8888888888888888888888888888888888888888"
+                  },
+                  "comments": {
+                    "nodes": [
+                      {
+                        "id": "PRRC_5504",
+                        "databaseId": 5504,
+                        "body": "@Helper-Bot nit",
+                        "url": "https://github.com/octo-org/sandbox/pull/8#discussion_r5504",
+                        "path": "src/loop.js",
+                        "createdAt": "2026-10-14T04:51:00Z",
+                        "publishedAt": "2026-10-14T04:51:00Z",
+                        "updatedAt": "2026-10-14T04:51:00Z",
+                        "lastEditedAt": null,
+                        "author": {
+                          "login": "octo-user"
+                        },
+                        "editor": null
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 11,
+            "url": "https://github.com/octo-org/sandbox/pull/11",
+            "title": "Pull 11",
+            "updatedAt": "2026-10-14T03:00:00Z",
+            "isCrossRepository": false,
+            "headRefName": "feature/stale",
+            "headRefOid": "1111111111111111111111111111111111111111",
+            "baseRefName": "main",
+            "headRepository": {
+              "nameWithOwner": "octo-org/sandbox",
+              "isFork": false
+            },
+            "reviews": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

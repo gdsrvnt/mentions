@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Reviews and inline review comments on a pull request with a merge conflict are forwarded. GitHub creates no `pull_request_review` or `pull_request_review_comment` run while the merge ref is missing. A scheduled `sweep` job, also runnable by hand with a `since` time, reads the trigger user's reviews and review comments and posts each one that mentions the bot and had no run of its own. It skips fork pull requests and edits made by anyone other than the trigger user.
+
 ## [1.2.0] - 2026-10-13
 
 ### Added

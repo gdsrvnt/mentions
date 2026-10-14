@@ -543,6 +543,8 @@ Adds \`.github/workflows/mention-forward.yml\` to forward GitHub mentions of \`@
 
 The workflow posts \`{"event_name","payload"}\` to the webhook. It does not check out repository code. Pull request opened and edited events use \`pull_request_target\` so secrets come from the default branch.
 
+A scheduled \`sweep\` job forwards reviews and inline review comments that got no run of their own. GitHub creates no review run while a pull request has a merge conflict. The sweep runs six times an hour. On a private repository each run bills Actions minutes.
+
 \`commit_comment\` is not an Actions trigger. actionlint rejects a workflow that subscribes to it.
 
 ## Secrets and webhook

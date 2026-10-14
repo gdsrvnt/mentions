@@ -621,3 +621,69 @@ test("stdin CLI prints one JSON decision", () => {
   assert.equal(decision.accept, true);
   assert.equal(decision.thread_key, threadKey("octo-org", "sandbox", "issue", 12));
 });
+
+const sweepConfig = { trigger_user: "octo-user", bot_handle: "helper-bot", repos: ["octo-org/sandbox"] };
+
+// scripts/test.sh checks that the workflow's review sweep posts exactly these bodies.
+function sweepInputs() {
+  const bodies = JSON.parse(readFileSync(join(fixtures, "sweep", "expected-forward.json"), "utf8"));
+  return bodies.map((body) => ({ ...body, config: sweepConfig }));
+}
+
+test("every body the review sweep posts is accepted after the fetch", () => {
+  const inputs = sweepInputs();
+  assert.deepEqual(
+    inputs.map((input) => input.event_name),
+    ["pull_request_review", "pull_request_review_comment", "pull_request_review", "pull_request_review"],
+  );
+  for (const input of inputs) {
+    const number = input.payload.pull_request.number;
+    const pending = routeEvent(input);
+    assert.equal(pending.reason, "needs_fetch");
+    const decision = finish(input);
+    assert.equal(decision.accept, true, `${input.event_name}: ${decision.reason}`);
+    assert.equal(decision.thread_key, threadKey("octo-org", "sandbox", "pr", number));
+    assert.equal(decision.ledger.event_name, input.event_name);
+    if (input.event_name === "pull_request_review_comment") {
+      const id = input.payload.comment.id;
+      assert.equal(pending.text_source.path, `/repos/octo-org/sandbox/pulls/comments/${id}`);
+      assert.deepEqual(decision.reply_target, { kind: "review-comment-reply", number, comment_id: id });
+    } else {
+      const id = input.payload.review.id;
+      assert.equal(pending.text_source.path, `/repos/octo-org/sandbox/pulls/${number}/reviews/${id}`);
+      assert.deepEqual(decision.reply_target, { kind: "issue-comment", number });
+    }
+  }
+});
+
+test("a swept review that the webhook also delivered is a duplicate", () => {
+  const [swept] = sweepInputs();
+  const fetched = apiObject(swept);
+  const first = finish({ ...swept, fetched });
+  assert.equal(first.accept, true);
+  const webhook = {
+    event_name: "pull_request_review",
+    config: sweepConfig,
+    payload: {
+      action: "submitted",
+      repository: { full_name: "octo-org/sandbox" },
+      sender: { login: "octo-user" },
+      pull_request: { number: 7, head: { repo: { fork: false } } },
+      review: { id: swept.payload.review.id, body: swept.payload.review.body },
+    },
+    seen: [first.ledger],
+  };
+  const again = finish({ ...webhook, fetched });
+  assert.equal(again.accept, false);
+  assert.equal(again.reason, "duplicate");
+});
+
+test("swept bodies get the same sender and fork checks as webhook deliveries", () => {
+  const [swept] = sweepInputs();
+  const edited = structuredClone(swept);
+  edited.payload.sender = { login: "someone-else" };
+  assert.equal(routeEvent(edited).reason, "wrong_sender");
+  const forked = structuredClone(swept);
+  forked.payload.pull_request.head.repo = { full_name: "mallory/sandbox", fork: true };
+  assert.equal(routeEvent(forked).reason, "fork_review");
+});
