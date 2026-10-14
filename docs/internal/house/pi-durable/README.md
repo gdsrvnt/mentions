@@ -9,7 +9,7 @@ speakers: [Mario Zechner, Armin Ronacher]
 
 # Pi Durable
 
-> As of 2026-10-07. This page is drawn only from what Mario Zechner and Armin Ronacher said in the video. The podcast host is not a source for anything here. Timestamps (`mm:ss`) point into the video. The raw speaker-labeled excerpts are in [transcript.md](transcript.md).
+> As of 2026-10-07. This page is drawn only from what Mario Zechner and Armin Ronacher said in the video. The podcast host is not a source for anything here. Timestamps (`mm:ss`) point into [the video](https://youtu.be/ja_7AF54OtE).
 
 ## What it is
 
@@ -67,4 +67,4 @@ These come up around Pi Durable and explain how the team builds:
 
 ## Caveats
 
-These notes come from a machine transcript with automatic speaker labels. Timestamps marked `x` are approximate. A few stretches are uncertain or were left out: `15:42`–`16:06`, `18:00`, `19:24` and `52:55`–`54:12` have uncertain speakers, and `20:36`–`21:57` and `26:46`–`27:18` are partly unreadable. See [transcript.md](transcript.md).
+These notes come from a machine transcript with automatic speaker labels. Timestamps marked `x` are approximate. A few stretches are uncertain or were left out: `15:42`–`16:06`, `18:00`, `19:24` and `52:55`–`54:12` have uncertain speakers, and `20:36`–`21:57` and `26:46`–`27:18` are partly unreadable.
