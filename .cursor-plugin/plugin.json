@@ -1,7 +1,7 @@
 {
   "name": "mentions",
   "displayName": "GitHub Mentions",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Forward a chosen person's GitHub @mentions to a Grok Bot routine, then reply on the same thread from a bot account.",
   "author": {
     "name": "gdsrvnt",
