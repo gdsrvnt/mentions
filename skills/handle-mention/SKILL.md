@@ -1,6 +1,6 @@
 ---
 name: handle-mention
-description: "Handle one forwarded GitHub mention. Fetch the comment from GitHub, launch or steer a herdr agent for that thread, and let the agent post the reply. Drop events that fail the router."
+description: "Handle one forwarded GitHub mention or review request. Fetch the comment or the review request from GitHub, launch or steer a herdr agent for that thread, and let the agent post the reply. Drop events that fail the router."
 ---
 
 # Handle a mention
@@ -57,6 +57,30 @@ When `accept` is false for any other reason, append one line to `state_dir/dropp
 
 - `api: rest` means `gh api` on `text_source.path`.
 - `api: graphql` means read that discussion, or that discussion comment, from GitHub.
+- `api: graphql` with `what: review_requested` means run this query with `owner`, `name`, and `number` from `text_source`, and pass `data.repository.pullRequest` as `fetched`. Do not add other item types.
+
+```graphql
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      number
+      repository { name owner { login } }
+      timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+        nodes {
+          __typename
+          ... on ReviewRequestedEvent {
+            id
+            createdAt
+            actor { login }
+            requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+          }
+        }
+      }
+    }
+  }
+}
+```
 
 Pass the fetched JSON back as `fetched`. The second result is the decision. Use its `thread_key`, `agent_name`, `reply_target`, `ledger`, and `ledger_path`. Ignore the webhook event name, `payload` numbers, node ids, timestamps, and `issue.pull_request` after this point. The fetched object chooses the delivery and the thread. An issue object with `pull_request` is a pull request, so an `issues` wrap of that object is not another delivery. A discussion object may use `id`, `updatedAt`, and `discussion.number`. Pass that object through. Do not copy those fields from the webhook. The fetched author and the fetched text are what the router checked.
 
@@ -70,7 +94,7 @@ Claim the thread before you post or launch. From the plugin root:
 node scripts/thread-state.mjs claim
 ```
 
-Send `{state_dir, work_root, thread_key, owner, repo, ledger_path, request_text, agent_name, reply_target}`. `owner` and `repo` are the repository the router accepted. `request_text` is the fetched text plus the line `Request from <trigger_user>`.
+Send `{state_dir, work_root, thread_key, owner, repo, ledger_path, request_text, agent_name, reply_target}`. `owner` and `repo` are the repository the router accepted. `request_text` is the fetched text plus the line `Request from <trigger_user>`. A review request has no text. When `ledger.event_name` is `review_requested`, `request_text` is `Review requested on pull request #<number>. Review it and submit the review as <comment_as>.` plus the same line. `<number>` is `reply_target.number`.
 
 - `busy` means another dispatch holds the lease. The distinct request is already stored at `request_path`. Retry the claim later. Do not drop it and do not comment yet.
 - `duplicate` means this fetched revision was already delivered. Log `duplicate` and stop.

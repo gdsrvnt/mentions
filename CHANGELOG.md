@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-13
+
+### Added
+
+- A review request for the bot from the trigger user is a mention. The workflow subscribes to `pull_request_target` `review_requested` and forwards it when the requested reviewer is the bot. The router reads the pull request's review-request timeline from GitHub and accepts the newest request from the trigger user for the bot. A team request is not forwarded. A repeated request is a new delivery. New drop reason: `no_review_request`.
+
 ## [1.1.0] - 2026-10-12
 
 ### Added

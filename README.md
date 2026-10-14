@@ -2,7 +2,7 @@
 
 [![CI status for the example repository](https://github.com/gdsrvnt/mentions/actions/workflows/ci.yml/badge.svg)](https://github.com/gdsrvnt/mentions/actions/workflows/ci.yml)
 
-`mentions` forwards a GitHub @mention of your bot to a Grok Bot routine, then an agent replies on that same thread. You choose the person whose mentions count and the handle they write. The plugin installs into any repository you can push.
+`mentions` forwards a GitHub @mention of your bot to a Grok Bot routine, then an agent replies on that same thread. You choose the person whose mentions count and the handle they write. When that person requests a review from the bot on a pull request, that counts as a mention too. The plugin installs into any repository you can push.
 
 ## How it works
 
@@ -25,7 +25,9 @@ sequenceDiagram
 
 A workflow in the target repository posts `{event_name, payload}` to the Grok Bot webhook routine. The routine runs `skills/handle-mention/SKILL.md`. That skill calls `scripts/route-event.mjs`, fetches the comment from GitHub, and starts one herdr agent for the thread. The agent writes the progress comments and the final reply. The dispatcher does not post those for it.
 
-`scripts/route-event.mjs` reads `{event_name, payload, config, seen, fetched}` and prints `{accept, reason, thread_key, agent_name, text_source, reply_target, ledger, ledger_path}`. The first call has no `fetched` object and returns `needs_fetch` plus `text_source`. The second call passes the GitHub API object. The ledger, the thread, and the reply target come from that object. `reason` is `ok`, `needs_fetch`, `wrong_repo`, `wrong_sender`, `no_mention`, `fork_review`, `duplicate`, `unsupported_event`, or another drop listed in the script. Logins and handles match without case. `@bot` does not match `@bot2`. Fork pull request bodies are forwarded. Fork reviews are not.
+`scripts/route-event.mjs` reads `{event_name, payload, config, seen, fetched}` and prints `{accept, reason, thread_key, agent_name, text_source, reply_target, ledger, ledger_path}`. The first call has no `fetched` object and returns `needs_fetch` plus `text_source`. The second call passes the GitHub API object. The ledger, the thread, and the reply target come from that object. `reason` is `ok`, `needs_fetch`, `wrong_repo`, `wrong_sender`, `no_mention`, `no_review_request`, `fork_review`, `duplicate`, `unsupported_event`, or another drop listed in the script. Logins and handles match without case. `@bot` does not match `@bot2`. Fork pull request bodies are forwarded. Fork reviews are not.
+
+A review request has no text. The workflow forwards `pull_request_target` with action `review_requested` when the trigger user requests the bot as a reviewer. A team request does not count. The router then reads the pull request's review-request timeline from GitHub and accepts the newest request from the trigger user for the bot. Requesting the review again is a new delivery. The agent reviews the pull request and replies on it.
 
 `skills/setup-mentions/SKILL.md` is the installer entry point. It runs `scripts/install.sh`.
 
@@ -88,7 +90,7 @@ Installing the plugin does not install the workflow. The workflow install is `sc
 4. Set the Actions secrets. Inside Grok Bot the bot reads `WEBHOOK_URL`, `WEBHOOK_HEADER`, and, only when the header is a bare name, `WEBHOOK_KEY`. It sets them with a secret card. Otherwise run `gh secret set`.
 5. Paste `templates/routine-prompt.md` into the routine.
 6. Merge the workflow pull request.
-7. Run the smoke test. The trigger user mentions the bot and the run is delivered. The bot mentioning itself is skipped. A trigger-user comment without the mention is skipped.
+7. Run the smoke test. The trigger user mentions the bot and the run is delivered. The bot mentioning itself is skipped. A trigger-user comment without the mention is skipped. The trigger user requests a review from the bot on a pull request and the run is delivered.
 
 Preview, then install, from the plugin root:
 
@@ -172,7 +174,7 @@ A 401 that says the API key is invalid means the header secret was split into a 
 
 `gh run view --log-failed` can be empty. Read the job log with `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs`.
 
-A skipped job means the actor was not the trigger user, or the text did not contain the handle. Actions `==` and `contains()` ignore case. The shell step then requires a mention boundary.
+A skipped job means the actor was not the trigger user, or the text did not contain the handle. For a review request, it means the requested reviewer was not the bot. Actions `==` and `contains()` ignore case. The shell step then requires a mention boundary, or for a review request the bot's login.
 
 Fork reviews exit 0 with a notice. They are not delivered.
 

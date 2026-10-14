@@ -3,10 +3,12 @@ name: mention-forward
 # Forwards selected GitHub events to a webhook when the trigger user mentions the bot.
 #
 # Surfaces covered: issues, issue_comment, pull_request, pull_request_review,
-# pull_request_review_comment, discussion, discussion_comment.
+# pull_request_review_comment, discussion, discussion_comment, and a review
+# request for the bot (pull_request_target review_requested), which has no text.
 #
-# Pull request opened and edited events are subscribed as pull_request_target so
-# the workflow file and repository secrets come from the default branch. This job
+# Pull request opened, edited, and review_requested events are subscribed as
+# pull_request_target so the workflow file and repository secrets come from the
+# default branch. This job
 # never checks out repository code and never runs pull request contents.
 #
 # commit_comment is not an Actions trigger. actionlint rejects a workflow that
@@ -22,7 +24,7 @@ on:
   issue_comment:
     types: [created, edited]
   pull_request_target:
-    types: [opened, edited]
+    types: [opened, edited, review_requested]
   pull_request_review:
     types: [submitted, edited]
   pull_request_review_comment:
@@ -42,7 +44,8 @@ jobs:
     if: >-
       github.actor == '__MENTIONS_TRIGGER_USER__' && (
         (github.event_name == 'issues' && (contains(github.event.issue.body || '', '@__MENTIONS_BOT_HANDLE__') || contains(github.event.issue.title || '', '@__MENTIONS_BOT_HANDLE__'))) ||
-        (github.event_name == 'pull_request_target' && (contains(github.event.pull_request.body || '', '@__MENTIONS_BOT_HANDLE__') || contains(github.event.pull_request.title || '', '@__MENTIONS_BOT_HANDLE__'))) ||
+        (github.event_name == 'pull_request_target' && github.event.action != 'review_requested' && (contains(github.event.pull_request.body || '', '@__MENTIONS_BOT_HANDLE__') || contains(github.event.pull_request.title || '', '@__MENTIONS_BOT_HANDLE__'))) ||
+        (github.event_name == 'pull_request_target' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == '__MENTIONS_BOT_HANDLE__') ||
         (github.event_name == 'pull_request_review' && contains(github.event.review.body || '', '@__MENTIONS_BOT_HANDLE__')) ||
         (github.event_name == 'discussion' && (contains(github.event.discussion.body || '', '@__MENTIONS_BOT_HANDLE__') || contains(github.event.discussion.title || '', '@__MENTIONS_BOT_HANDLE__'))) ||
         ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment' || github.event_name == 'discussion_comment') && contains(github.event.comment.body || '', '@__MENTIONS_BOT_HANDLE__'))
@@ -57,20 +60,30 @@ jobs:
         run: |
           # mentions-forward-script
           set -euo pipefail
-          text="$(jq -r '
-            def s: if . == null then "" else . end;
-            if (.comment.body != null) then .comment.body
-            elif (.review.body != null) then .review.body
-            elif (.issue != null) then ((.issue.title | s) + "\n" + (.issue.body | s))
-            elif (.pull_request != null) then ((.pull_request.title | s) + "\n" + (.pull_request.body | s))
-            elif (.discussion != null) then ((.discussion.title | s) + "\n" + (.discussion.body | s))
-            else ""
-            end
-          ' "$GITHUB_EVENT_PATH")"
           handle="__MENTIONS_BOT_HANDLE__"
-          if ! printf '%s' "$text" | grep -Eiq "(^|[^[:alnum:]_-])@${handle}([^[:alnum:]_-]|$)"; then
-            echo "::notice::Mention boundary check failed for @${handle}"
-            exit 0
+          action="$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")"
+          if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$action" = "review_requested" ]; then
+            # A review request has no text. The requested reviewer must be the bot.
+            reviewer="$(jq -r '.requested_reviewer.login // ""' "$GITHUB_EVENT_PATH")"
+            if ! printf '%s\n' "$reviewer" | grep -Fxiq -- "$handle"; then
+              echo "::notice::Review was not requested from ${handle}"
+              exit 0
+            fi
+          else
+            text="$(jq -r '
+              def s: if . == null then "" else . end;
+              if (.comment.body != null) then .comment.body
+              elif (.review.body != null) then .review.body
+              elif (.issue != null) then ((.issue.title | s) + "\n" + (.issue.body | s))
+              elif (.pull_request != null) then ((.pull_request.title | s) + "\n" + (.pull_request.body | s))
+              elif (.discussion != null) then ((.discussion.title | s) + "\n" + (.discussion.body | s))
+              else ""
+              end
+            ' "$GITHUB_EVENT_PATH")"
+            if ! printf '%s' "$text" | grep -Eiq "(^|[^[:alnum:]_-])@${handle}([^[:alnum:]_-]|$)"; then
+              echo "::notice::Mention boundary check failed for @${handle}"
+              exit 0
+            fi
           fi
           work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
           if [ -z "${WEBHOOK_URL:-}" ] || [ -z "${WEBHOOK_HEADER:-}" ]; then
