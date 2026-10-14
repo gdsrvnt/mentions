@@ -3,6 +3,7 @@
 // stdin: { event_name, payload, config, seen?, fetched? }
 // stdout: { accept, reason, thread_key, agent_name, text_source, reply_target, ledger, ledger_path }
 // A final accept requires fetched, the GitHub API object. The delivery name and the thread kind come from that object. A webhook wrap that names a different object is not a delivery.
+// A review request (pull_request action review_requested) carries no text. Its fetched object is the pull request's review-request timeline.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -480,6 +481,81 @@ function fetchedRepo(eventName, fetched) {
   return repoFromUrl(parentUrl(eventName, fetched));
 }
 
+function isReviewRequest(eventName, payload) {
+  return canonicalWrap(eventName) === "pull_request" && payload.action === "review_requested";
+}
+
+// GitHub lists timeline items oldest first, so the last match is the newest request.
+function newestRequest(events, botHandle, triggerUser) {
+  const forBot = events.filter(
+    (event) =>
+      event &&
+      event.__typename === "ReviewRequestedEvent" &&
+      lower(event.requestedReviewer?.login) === lower(botHandle),
+  );
+  if (forBot.length === 0) {
+    return { reason: "no_review_request" };
+  }
+  const byTrigger = forBot.filter((event) => lower(event.actor?.login) === lower(triggerUser));
+  if (byTrigger.length === 0) {
+    return { reason: "wrong_sender" };
+  }
+  return { event: byTrigger[byTrigger.length - 1] };
+}
+
+function routeReviewRequest(input, payload, fullName) {
+  const { trigger_user: triggerUser, bot_handle: botHandle } = input.config;
+  if (lower(payload.requested_reviewer?.login) !== lower(botHandle)) {
+    return reject("no_review_request");
+  }
+  const pull = payload.pull_request;
+  if (!positiveInt(pull?.number)) {
+    return reject("missing_object");
+  }
+  const textSource = graphql(fullName, pull.number, "review_requested", pull.node_id ?? null);
+  if (!input.fetched) {
+    return reject("needs_fetch", textSource);
+  }
+  const fetched = input.fetched;
+  if (!fetched || typeof fetched !== "object" || Array.isArray(fetched)) {
+    return reject("missing_object", textSource);
+  }
+  const linkedRepo = fetchedRepo("pull_request", fetched);
+  if (!linkedRepo || lower(linkedRepo) !== lower(fullName)) {
+    return reject("wrong_repo");
+  }
+  const events = fetched.timelineItems?.nodes;
+  if (!positiveInt(fetched.number) || !Array.isArray(events)) {
+    return reject("missing_object", textSource);
+  }
+  const found = newestRequest(events, botHandle, triggerUser);
+  if (!found.event) {
+    return reject(found.reason);
+  }
+  const stamp = {
+    node_id: nodeIdOf(found.event),
+    updated_at: typeof found.event.createdAt === "string" ? found.event.createdAt : null,
+  };
+  if (!stamp.node_id || !stamp.updated_at) {
+    return reject("missing_object", textSource);
+  }
+  if (duplicate(input.seen, stamp)) {
+    return reject("duplicate");
+  }
+  const { owner, repo } = splitRepo(fullName);
+  const number = fetched.number;
+  return {
+    accept: true,
+    reason: "ok",
+    thread_key: threadKey(owner, repo, "pr", number),
+    agent_name: agentName(owner, repo, "pr", number),
+    text_source: textSource,
+    reply_target: { kind: "issue-comment", number },
+    ledger: { event_name: "review_requested", ...stamp },
+    ledger_path: ["review_requested", pathSegment(stamp.node_id), pathSegment(stamp.updated_at)],
+  };
+}
+
 function duplicate(seen, identity) {
   if (!Array.isArray(seen) || !identity) {
     return false;
@@ -513,6 +589,9 @@ export function routeEvent(input) {
   const sender = payload.sender?.login;
   if (typeof sender !== "string" || lower(sender) !== lower(input.config.trigger_user)) {
     return reject("wrong_sender");
+  }
+  if (isReviewRequest(eventName, payload)) {
+    return routeReviewRequest(input, payload, fullName);
   }
   const view = viewFor(eventName, payload);
   if (!view) {

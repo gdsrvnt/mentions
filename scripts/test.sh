@@ -128,6 +128,8 @@ assert_contains "$wf" "secrets.MENTION_WEBHOOK_URL"
 assert_contains "$wf" "secrets.MENTION_WEBHOOK_KEY"
 assert_contains "$wf" "secrets.MENTION_WEBHOOK_HEADER"
 assert_contains "$wf" "pull_request_target:"
+assert_contains "$wf" "types: [opened, edited, review_requested]"
+assert_contains "$wf" "github.event.requested_reviewer.login == 'my-bot'"
 assert_contains "$wf" "issue_comment:"
 assert_contains "$wf" "pull_request_review:"
 assert_contains "$wf" "pull_request_review_comment:"
@@ -427,6 +429,26 @@ if [[ "$bound_status" -ne 0 ]]; then
   fail "a non-boundary mention should exit 0"
 fi
 assert_contains "${tmp}/bound.out" "Mention boundary check failed"
+
+# A review request has no text. It forwards when the bot is the requested reviewer.
+request_file="${tmp}/request.json"
+printf '%s\n' '{"action":"review_requested","requested_reviewer":{"login":"My-Bot"},"pull_request":{"number":7,"title":"t","body":""}}' > "$request_file"
+post_forward "X-Webhook-Key" "k" "pull_request_target" "$request_file"
+if [[ "$forward_status" != "0" ]]; then
+  fail "review request for the bot failed: $(cat "${tmp}/forward.err" "${tmp}/forward.out")"
+fi
+assert_contains "${tmp}/capture.txt" "X-Webhook-Key: k"
+assert_contains "${tmp}/forward.out" "webhook HTTP 204"
+other_request="${tmp}/other-request.json"
+printf '%s\n' '{"action":"review_requested","requested_reviewer":{"login":"my-bot2"},"pull_request":{"number":7,"title":"t","body":"@my-bot"}}' > "$other_request"
+post_forward "X-Webhook-Key" "k" "pull_request_target" "$other_request"
+if [[ "$forward_status" != "0" ]]; then
+  fail "a review request for another reviewer should exit 0"
+fi
+assert_contains "${tmp}/forward.out" "Review was not requested from my-bot"
+if [[ -s "${tmp}/capture.txt" ]]; then
+  fail "a review request for another reviewer was posted"
+fi
 
 canon_bin="${tmp}/canonbin"
 mkdir -p "$canon_bin"

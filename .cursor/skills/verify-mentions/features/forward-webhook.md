@@ -10,12 +10,14 @@ When the trigger user mentions the bot on an issue, PR, review, or discussion, t
 - `fwd-header-line`: when `*_WEBHOOK_HEADER` contains `:`, the step sends it verbatim, and `*_WEBHOOK_KEY` is optional.
 - `fwd-401`: a wrong key gets a 401 from the routine, and the step fails with exit 1 and `::error::webhook returned HTTP 401`. The response body is not printed.
 - `fwd-missing-secrets`: a missing URL or header, or a bare header name with no key, fails before any request is sent.
+- `fwd-review-request`: a `pull_request_target` `review_requested` event posts when `requested_reviewer.login` is the bot (any case) and exits 0 with `::notice::Review was not requested from <bot>` otherwise. The text boundary is not applied to it. `scripts/test.sh` covers both.
 - `fwd-filter`: the job `if:` runs only for the trigger user with `@bot` in the event text. Actions `==` and `contains()` are case-insensitive. The shell boundary still rejects `@bot2`. This is static evidence only (see Gotchas).
 
 ## How to get to it (user POV)
 
 - A GitHub user comments `@helper-bot …` on an issue or PR in a repo where the setup PR was merged and the three secrets exist.
 - The same for issue/PR/discussion bodies and titles, PR reviews, inline review comments, and discussion comments.
+- The user requests a review from `helper-bot` on a PR.
 
 ## Driving it with control-mentions
 

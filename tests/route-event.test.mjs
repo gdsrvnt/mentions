@@ -30,10 +30,30 @@ function threadKey(owner, repo, kind, number) {
     .slice(0, 16);
 }
 
+function requestEvent(id, createdAt, actor, reviewer, typename = "ReviewRequestedEvent") {
+  return {
+    __typename: typename,
+    id,
+    createdAt,
+    actor: { login: actor },
+    requestedReviewer: { __typename: "User", login: reviewer },
+  };
+}
+
+function timeline(repo, number, nodes) {
+  const [owner, name] = repo.split("/");
+  return { id: `PR_${number}`, number, repository: { name, owner: { login: owner } }, timelineItems: { nodes } };
+}
+
 function apiObject(input) {
   const payload = input.payload;
   const repo = payload.repository.full_name;
   const eventName = input.event_name;
+  if (payload.action === "review_requested") {
+    return timeline(repo, payload.pull_request.number, [
+      requestEvent("RRE_1", "2026-10-12T07:00:00Z", payload.sender.login, payload.requested_reviewer.login),
+    ]);
+  }
   if (eventName === "issues") {
     const issue = payload.issue;
     return {
@@ -109,6 +129,14 @@ const accepts = {
   "pull-request-target.json": { owner: "octo-org", repo: "sandbox", kind: "pr", number: 7, reply: "issue-comment" },
   "fork-pull-request.json": { owner: "octo-org", repo: "sandbox", kind: "pr", number: 7, reply: "issue-comment" },
   "pull-request-review.json": { owner: "octo-org", repo: "sandbox", kind: "pr", number: 7, reply: "issue-comment" },
+  "review-requested.json": {
+    owner: "octo-org",
+    repo: "sandbox",
+    kind: "pr",
+    number: 7,
+    reply: "issue-comment",
+    ledger: "review_requested",
+  },
   "pull-request-review-comment.json": {
     owner: "octo-org",
     repo: "sandbox",
@@ -135,6 +163,7 @@ const rejects = {
   "no-mention.json": "no_mention",
   "commit-comment.json": "unsupported_event",
   "duplicate-issue.json": "duplicate",
+  "review-request-other-reviewer.json": "no_review_request",
 };
 
 test("fixture files cover the event types and the reject cases", () => {
@@ -161,9 +190,10 @@ for (const [name, want] of Object.entries(accepts)) {
     }
     assert.match(decision.agent_name, new RegExp(`^[a-f0-9]{8}-${want.kind}-${want.number}$`));
     assert.notEqual(decision.agent_name, decision.thread_key);
-    assert.equal(decision.ledger.event_name, canonicalEvent(input.event_name));
+    const ledgerEvent = want.ledger ?? canonicalEvent(input.event_name);
+    assert.equal(decision.ledger.event_name, ledgerEvent);
     assert.equal(decision.ledger_path.length, 3);
-    assert.equal(decision.ledger_path[0], canonicalEvent(input.event_name));
+    assert.equal(decision.ledger_path[0], ledgerEvent);
     for (const segment of decision.ledger_path.slice(1)) {
       assert.match(segment, /^[a-f0-9]{64}$/);
     }
@@ -294,6 +324,81 @@ test("the review comment reply target carries the comment id", () => {
 test("the issue comment text source is the comment, not the issue", () => {
   const decision = finish(load("issue-comment-on-pr.json"));
   assert.equal(decision.text_source.path, "/repos/octo-org/sandbox/issues/comments/1001");
+});
+
+test("a review request is read from the timeline, not the webhook", () => {
+  const input = load("review-requested.json");
+  const pending = routeEvent(input);
+  assert.equal(pending.reason, "needs_fetch");
+  assert.deepEqual(pending.text_source, {
+    api: "graphql",
+    owner: "octo-org",
+    name: "sandbox",
+    number: 7,
+    what: "review_requested",
+    node_id: "PR_7",
+  });
+  const route = (nodes, repo = "octo-org/sandbox") => routeEvent({ ...input, fetched: timeline(repo, 7, nodes) });
+  const newest = route([
+    requestEvent("RRE_1", "2026-10-12T07:00:00Z", "octo-user", "helper-bot"),
+    requestEvent("RRE_2", "2026-10-12T07:05:00Z", "octo-user", "octo-reviewer"),
+    requestEvent("RRE_3", "2026-10-12T07:10:00Z", "Octo-User", "Helper-Bot"),
+    requestEvent("RRE_4", "2026-10-12T07:15:00Z", "mallory", "helper-bot"),
+  ]);
+  assert.equal(newest.accept, true);
+  assert.deepEqual(newest.ledger, {
+    event_name: "review_requested",
+    node_id: "RRE_3",
+    updated_at: "2026-10-12T07:10:00Z",
+  });
+  assert.equal(route([requestEvent("RRE_4", "2026-10-12T07:15:00Z", "mallory", "helper-bot")]).reason, "wrong_sender");
+  assert.equal(
+    route([requestEvent("RRE_2", "2026-10-12T07:05:00Z", "octo-user", "octo-reviewer")]).reason,
+    "no_review_request",
+  );
+  assert.equal(
+    route([requestEvent("RRR_5", "2026-10-12T07:20:00Z", "octo-user", "helper-bot", "ReviewRequestRemovedEvent")]).reason,
+    "no_review_request",
+  );
+  assert.equal(route([requestEvent("RRE_1", "2026-10-12T07:00:00Z", "octo-user", "helper-bot")], "octo-org/other").reason, "wrong_repo");
+  const noRepo = timeline("octo-org/sandbox", 7, [requestEvent("RRE_1", "2026-10-12T07:00:00Z", "octo-user", "helper-bot")]);
+  delete noRepo.repository;
+  assert.equal(routeEvent({ ...input, fetched: noRepo }).reason, "wrong_repo");
+});
+
+test("a review request comes only from the trigger user, for the bot", () => {
+  const input = load("review-requested.json");
+  const stranger = structuredClone(input);
+  stranger.payload.sender.login = "mallory";
+  assert.equal(routeEvent(stranger).reason, "wrong_sender");
+  const team = structuredClone(input);
+  delete team.payload.requested_reviewer;
+  team.payload.requested_team = { slug: "helper-bot" };
+  assert.equal(routeEvent(team).reason, "no_review_request");
+  const opened = structuredClone(input);
+  opened.payload.action = "opened";
+  assert.equal(routeEvent(opened).reason, "no_mention");
+});
+
+test("a re-requested review is a new delivery and a replay is a duplicate", () => {
+  const input = load("review-requested.json");
+  const first = finish(input);
+  assert.equal(first.accept, true);
+  const replay = finish({ ...input, event_name: "pull_request", seen: [first.ledger] });
+  assert.equal(replay.accept, false);
+  assert.equal(replay.reason, "duplicate");
+  const again = routeEvent({
+    ...input,
+    seen: [first.ledger],
+    fetched: timeline("octo-org/sandbox", 7, [
+      requestEvent("RRE_1", "2026-10-12T07:00:00Z", "octo-user", "helper-bot"),
+      requestEvent("RRE_9", "2026-10-13T07:00:00Z", "octo-user", "helper-bot"),
+    ]),
+  });
+  assert.equal(again.accept, true);
+  assert.equal(again.ledger.node_id, "RRE_9");
+  assert.equal(again.thread_key, first.thread_key);
+  assert.notDeepEqual(again.ledger_path, first.ledger_path);
 });
 
 test("a pull_request alias is the same delivery as pull_request_target", () => {
